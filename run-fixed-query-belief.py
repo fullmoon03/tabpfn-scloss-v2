@@ -26,7 +26,7 @@ warnings.filterwarnings(
 
 def make_classifier_pred_rule(cfg: DictConfig, dgp: object) -> TabPFNClassifierPredRule:
     dim_x = dgp.train_data["x"].shape[-1]
-    if cfg.dgp.name.startswith("classification-fixed"):
+    if cfg.dgp.name.startswith("classification-fixed") or cfg.dgp.name == "classification-scm":
         categorical_x = [False] * dim_x
     elif cfg.dgp.name in OPENML_CLASSIFICATION + OPENML_BINARY_CLASSIFICATION:
         categorical_x = dgp.categorical_x
@@ -172,7 +172,7 @@ def main(cfg: DictConfig) -> None:
     base_key, data_key = jax.random.split(base_key)
 
     dgp = load_dgp(cfg, data_key)
-    if not hasattr(dgp, "test_data"):
+    if getattr(dgp, "test_data", None) is None:
         raise ValueError(f"{cfg.dgp.name} does not provide a held-out test split for query sampling.")
 
     query_idx, x_query, y_query = sample_test_queries(dgp.test_data, cfg.num_queries, cfg.seed * 101)

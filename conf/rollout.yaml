@@ -1,5 +1,6 @@
 defaults:
-  - dgp: regression
+  - dgp: classification-fixed
+  - synthetic-test
   - _self_
 
 rollout_times: 100 # number of posterior samples/forward rollout
@@ -26,4 +27,3 @@ hydra:
   sweep:
     dir: ${hydra.run.dir}
     subdir: .
-

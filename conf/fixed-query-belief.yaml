@@ -1,5 +1,6 @@
 defaults:
   - dgp: openml
+  - synthetic-test
   - _self_
 
 dgp:

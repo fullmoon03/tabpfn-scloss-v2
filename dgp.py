@@ -14,6 +14,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import KBinsDiscretizer
 from ucimlrepo import fetch_ucirepo
 
+from scm_dgp import generate_scm_classification_dataset, sample_scm_parameters
 import utils
 
 openml.config.set_root_cache_directory(os.path.join(os.getcwd(), "datasets/openml"))
@@ -35,11 +36,6 @@ class DGP(eqx.Module):
         transformation-compatible operations.
         """
         pass
-
-    @abstractmethod
-    def get_population(self) -> dict[str, np.ndarray]:
-        pass
-
 
 def multidim_stratified_split(
     key: PRNGKeyArray,
@@ -160,9 +156,6 @@ class DGPReal(DGP):
     test_data: dict[str, np.ndarray]
     categorical_x: list[bool]
     strata_bins: int
-
-    def get_population(self) -> dict[str, np.ndarray]:
-        return self.full_data
 
     def get_x_data(self, key: PRNGKeyArray, n: int) -> Array:
         # Sample x from self.full_data with replacement
@@ -373,11 +366,12 @@ class DGPSyntheticFixed(DGP):
 
     beta0: np.ndarray
     dim_x: int
+    test_data: dict[str, np.ndarray] | None
     categorical_x: list[bool]
     target_name: str
     feature_name: list[str]
 
-    def __init__(self, key: PRNGKeyArray, n: int, dim_x: int):
+    def __init__(self, key: PRNGKeyArray, n: int, dim_x: int, test_data_size: int = 0):
         self.input_key = key
         # Draw betas from a Uniform(-2, 3) prior, and this is fixed
         fixed_key = jax.random.key(1058)
@@ -386,8 +380,11 @@ class DGPSyntheticFixed(DGP):
             dtype=np.float64,
         )
         self.dim_x = self.beta0.shape[0]
-        key, data_key = jax.random.split(key, 2)
+        key, data_key, test_key = jax.random.split(key, 3)
         self.train_data = self.get_data(data_key, n)
+        self.test_data = (
+            self.get_data(test_key, test_data_size) if test_data_size > 0 else None
+        )
         self.target_name = "y"
         self.feature_name = [f"x{i + 1}" for i in range(dim_x)]
         self.categorical_x = [False] * dim_x
@@ -396,10 +393,6 @@ class DGPSyntheticFixed(DGP):
         # We need this for forward recursion
         key, subkey = jax.random.split(key)
         return jax.random.uniform(subkey, shape=(n, self.dim_x), minval=-1, maxval=1)
-
-    def get_population(self) -> dict[str, np.ndarray]:
-        population_data = self.get_data(jax.random.key(50), 100000)
-        return jax.tree.map(lambda x: np.asarray(x, dtype=np.float64), population_data)
 
     @abstractmethod
     def get_data(self, key: PRNGKeyArray, n: int) -> dict[str, np.ndarray]:
@@ -412,8 +405,10 @@ class DGPClassificationFixed(DGPSyntheticFixed):
     regression model as parameterised by the weights.
     """
 
-    def __init__(self, key: PRNGKeyArray, n: int, dim_x: int):
-        super().__init__(key, n, dim_x)
+    def __init__(
+        self, key: PRNGKeyArray, n: int, dim_x: int, test_data_size: int = 0
+    ):
+        super().__init__(key, n, dim_x, test_data_size=test_data_size)
 
     def get_data(self, key: PRNGKeyArray, n: int) -> dict[str, np.ndarray]:
         key, x_key, y_key = jax.random.split(key, 3)
@@ -435,9 +430,16 @@ class DGPClassificationFixedGMMLink(DGPSyntheticFixed):
 
     a: float = -1.0
 
-    def __init__(self, key: PRNGKeyArray, n: int, dim_x: int, a: float):
+    def __init__(
+        self,
+        key: PRNGKeyArray,
+        n: int,
+        dim_x: int,
+        a: float,
+        test_data_size: int = 0,
+    ):
         self.a = a
-        super().__init__(key, n, dim_x)
+        super().__init__(key, n, dim_x, test_data_size=test_data_size)
 
     def get_data(self, key: PRNGKeyArray, n: int) -> dict[str, np.ndarray]:
         cdf = jax.scipy.stats.norm.cdf
@@ -460,9 +462,16 @@ class DGPRegressionFixed(DGPSyntheticFixed):
 
     noise_std: float = 1.0
 
-    def __init__(self, key: PRNGKeyArray, n: int, dim_x: int, noise_std: float):
+    def __init__(
+        self,
+        key: PRNGKeyArray,
+        n: int,
+        dim_x: int,
+        noise_std: float,
+        test_data_size: int = 0,
+    ):
         self.noise_std = noise_std
-        super().__init__(key, n, dim_x)
+        super().__init__(key, n, dim_x, test_data_size=test_data_size)
 
     def get_data(self, key: PRNGKeyArray, n: int) -> dict[str, np.ndarray]:
         key, x_key, y_key = jax.random.split(key, 3)
@@ -484,10 +493,18 @@ class DGPRegressionFixedDependentError(DGPSyntheticFixed):
     s_small: float
     s_mod: float
 
-    def __init__(self, key: PRNGKeyArray, n: int, dim_x: int, s_small: float, s_mod: float):
+    def __init__(
+        self,
+        key: PRNGKeyArray,
+        n: int,
+        dim_x: int,
+        s_small: float,
+        s_mod: float,
+        test_data_size: int = 0,
+    ):
         self.s_small = s_small
         self.s_mod = s_mod
-        super().__init__(key, n, dim_x)
+        super().__init__(key, n, dim_x, test_data_size=test_data_size)
 
     def get_data(self, key: PRNGKeyArray, n: int) -> dict[str, np.ndarray]:
         key, x_key, y_key = jax.random.split(key, 3)
@@ -517,9 +534,11 @@ class DGPRegressionFixedNonNormalError(DGPSyntheticFixed):
 
     df: int
 
-    def __init__(self, key: PRNGKeyArray, n: int, dim_x: int, df: int):
+    def __init__(
+        self, key: PRNGKeyArray, n: int, dim_x: int, df: int, test_data_size: int = 0
+    ):
         self.df = df
-        super().__init__(key, n, dim_x)
+        super().__init__(key, n, dim_x, test_data_size=test_data_size)
 
     def get_data(self, key: PRNGKeyArray, n: int) -> dict[str, np.ndarray]:
         key, x_key, y_key = jax.random.split(key, 3)
@@ -533,16 +552,20 @@ class DGPRegressionFixedNonNormalError(DGPSyntheticFixed):
 
 
 class DGPSynthetic(DGP):
+    test_data: dict[str, np.ndarray] | None
 
-    def __init__(self, key: PRNGKeyArray, n: int, dim_x: int):
+    def __init__(self, key: PRNGKeyArray, n: int, dim_x: int, test_data_size: int = 0):
         self.input_key = key
-        key, prior_key, data_key = jax.random.split(key, 3)
+        key, prior_key, data_key, test_key = jax.random.split(key, 4)
         # Draw from a N(0, 1) prior
         self.beta0 = np.asarray(
             jax.random.normal(prior_key, shape=(dim_x,)), dtype=np.float64
         )
         self.dim_x = dim_x
         self.train_data = self.get_data(data_key, n)
+        self.test_data = (
+            self.get_data(test_key, test_data_size) if test_data_size > 0 else None
+        )
 
     def get_x_data(self, key: PRNGKeyArray, n: int) -> Array:
         # We need this for forward recursion
@@ -553,10 +576,73 @@ class DGPSynthetic(DGP):
     def get_data(self, key: PRNGKeyArray, n: int) -> dict[str, np.ndarray]:
         pass
 
-    def get_population(self) -> dict[str, np.ndarray]:
-        population_data = self.get_data(jax.random.key(50), 100000)
-        return jax.tree.map(lambda x: np.asarray(x, dtype=np.float64), population_data)
+class DGPClassificationSCM(DGPSynthetic):
+    dim_x: int
+    num_classes: int
+    scm_parameters: object
+    test_data: dict[str, np.ndarray] | None
+    metadata: dict[str, object]
+    categorical_x: list[bool]
+    target_name: str
+    feature_name: list[str]
 
+    def __init__(
+        self,
+        key: PRNGKeyArray,
+        n: int,
+        dim_x: int,
+        num_classes: int,
+        test_data_size: int = 0,
+    ):
+        self.input_key = key
+        self.dim_x = dim_x
+        self.num_classes = num_classes
+        self.categorical_x = [False] * dim_x
+        self.target_name = "y"
+        self.feature_name = [f"x{i + 1}" for i in range(dim_x)]
+
+        key, param_key, data_key, test_key = jax.random.split(key, 4)
+        param_seed = int(
+            jax.random.randint(
+                param_key, shape=(), minval=0, maxval=2_147_483_647
+            ).item()
+        )
+        self.scm_parameters = sample_scm_parameters(
+            num_features=dim_x,
+            num_classes=num_classes,
+            seed=param_seed,
+        )
+        self.metadata = {"hyperparameters": self.scm_parameters.hyperparameters}
+        self.train_data = self.get_data(data_key, n)
+        self.test_data = (
+            self.get_data(test_key, test_data_size) if test_data_size > 0 else None
+        )
+
+        classes, counts = np.unique(self.train_data["y"], return_counts=True)
+        logging.info(
+            "SCM classification generated: "
+            f"n_features={dim_x}, "
+            f"requested_classes={num_classes}, "
+            f"observed_classes={classes.tolist()}, "
+            f"class_counts={counts.tolist()}"
+        )
+
+    def get_x_data(self, key: PRNGKeyArray, n: int) -> Array:
+        return self.get_data(key, n)["x"]
+
+    def get_data(self, key: PRNGKeyArray, n: int) -> dict[str, np.ndarray]:
+        data_seed = int(
+            jax.random.randint(key, shape=(), minval=0, maxval=2_147_483_647).item()
+        )
+        x, y, _ = generate_scm_classification_dataset(
+            num_samples=n,
+            parameters=self.scm_parameters,
+            seed=data_seed,
+        )
+        return {
+            "x": np.asarray(x, dtype=np.float64),
+            "y": np.asarray(y, dtype=np.int16),
+        }
 
 class DGPRegression(DGPSynthetic):
     """
@@ -566,8 +652,10 @@ class DGPRegression(DGPSynthetic):
 
     noise_std0: float
 
-    def __init__(self, key: PRNGKeyArray, n: int, dim_x: int):
-        super().__init__(key, n, dim_x)
+    def __init__(
+        self, key: PRNGKeyArray, n: int, dim_x: int, test_data_size: int = 0
+    ):
+        super().__init__(key, n, dim_x, test_data_size=test_data_size)
         self.noise_std0 = math.sqrt(0.1)
 
     def get_data(self, key: PRNGKeyArray, n: int) -> dict[str, np.ndarray]:
@@ -588,8 +676,10 @@ class DGPClassification(DGPSynthetic):
     regression model as parameterised by the weights.
     """
 
-    def __init__(self, key: PRNGKeyArray, n: int, dim_x: int):
-        super().__init__(key, n, dim_x)
+    def __init__(
+        self, key: PRNGKeyArray, n: int, dim_x: int, test_data_size: int = 0
+    ):
+        super().__init__(key, n, dim_x, test_data_size=test_data_size)
 
     def get_data(self, key: PRNGKeyArray, n: int) -> dict[str, np.ndarray]:
         key, x_key, y_key = jax.random.split(key, 3)
@@ -603,13 +693,19 @@ class DGPClassification(DGPSynthetic):
 
 
 class DGPWuMartin(DGP):
+    beta0: Array
+    dim_x: int
+    test_data: dict[str, np.ndarray] | None
 
-    def __init__(self, key: PRNGKeyArray, n: int):
+    def __init__(self, key: PRNGKeyArray, n: int, test_data_size: int = 0):
         self.input_key = key
         self.beta0 = jnp.array([1.0, 1.0, 2.0, -1.0])  # the truth in Wu and Martin 2023
         self.dim_x = self.beta0.shape[0]
-        key, data_key = jax.random.split(key, 2)
+        key, data_key, test_key = jax.random.split(key, 3)
         self.train_data = self.get_data(data_key, n)
+        self.test_data = (
+            self.get_data(test_key, test_data_size) if test_data_size > 0 else None
+        )
 
     def get_x_data(self, key: PRNGKeyArray, n: int) -> Array:
         rho = 0.2  # Correlation parameter as specified
@@ -626,10 +722,6 @@ class DGPWuMartin(DGP):
             x_key, mean=jnp.zeros(self.dim_x), cov=corr_matrix, shape=(n,)
         )
 
-    def get_population(self) -> dict[str, np.ndarray]:
-        population_data = self.get_data(jax.random.key(50), 100000)
-        return jax.tree.map(lambda x: np.asarray(x, dtype=np.float64), population_data)
-
     @abstractmethod
     def get_data(self, key: PRNGKeyArray, n: int) -> dict[str, np.ndarray]:
         pass
@@ -640,8 +732,8 @@ class DGPLinearRegressionWM(DGPWuMartin):
     The example in Wu and Martin 2023, Section 5.1. Standard linear regression.
     """
 
-    def __init__(self, key: PRNGKeyArray, n: int):
-        super().__init__(key, n)
+    def __init__(self, key: PRNGKeyArray, n: int, test_data_size: int = 0):
+        super().__init__(key, n, test_data_size=test_data_size)
 
     def get_data(self, key: PRNGKeyArray, n: int) -> dict[str, np.ndarray]:
         key, x_key, y_key = jax.random.split(key, 3)
@@ -661,8 +753,13 @@ class DGPDependentErrorWM(DGPWuMartin):
     s_small: float
     s_mod: float
 
-    def __init__(self, key: PRNGKeyArray, n: int, s_small: float, s_mod: float):
-        super().__init__(key, n)
+    s_small: float
+    s_mod: float
+
+    def __init__(
+        self, key: PRNGKeyArray, n: int, s_small: float, s_mod: float, test_data_size: int = 0
+    ):
+        super().__init__(key, n, test_data_size=test_data_size)
         self.s_small = s_small
         self.s_mod = s_mod
 
@@ -694,8 +791,10 @@ class DGPNonNormalErrorWM(DGPWuMartin):
 
     df: int
 
-    def __init__(self, key: PRNGKeyArray, n: int, df: int):
-        super().__init__(key, n)
+    df: int
+
+    def __init__(self, key: PRNGKeyArray, n: int, df: int, test_data_size: int = 0):
+        super().__init__(key, n, test_data_size=test_data_size)
         self.df = df
 
     def get_data(self, key: PRNGKeyArray, n: int) -> dict[str, np.ndarray]:
@@ -740,15 +839,35 @@ OPENML_CLASSIFICATION = [
 
 
 def load_dgp(cfg, data_key: PRNGKeyArray) -> DGP:
+    synthetic_test_data_size = getattr(cfg, "synthetic_test_data_size", 0)
+
     if cfg.dgp.name == "classification-fixed":
-        dgp = DGPClassificationFixed(data_key, cfg.data_size, cfg.dgp.dim_x)
+        dgp = DGPClassificationFixed(
+            data_key, cfg.data_size, cfg.dgp.dim_x, synthetic_test_data_size
+        )
     elif cfg.dgp.name == "classification-fixed-gmm":
         dgp = DGPClassificationFixedGMMLink(
-            data_key, cfg.data_size, cfg.dgp.dim_x, cfg.dgp.a
+            data_key,
+            cfg.data_size,
+            cfg.dgp.dim_x,
+            cfg.dgp.a,
+            synthetic_test_data_size,
+        )
+    elif cfg.dgp.name == "classification-scm":
+        dgp = DGPClassificationSCM(
+            data_key,
+            cfg.data_size,
+            dim_x=cfg.dgp.dim_x,
+            num_classes=cfg.dgp.num_classes,
+            test_data_size=synthetic_test_data_size,
         )
     elif cfg.dgp.name == "regression-fixed":
         dgp = DGPRegressionFixed(
-            data_key, cfg.data_size, cfg.dgp.dim_x, cfg.dgp.noise_std
+            data_key,
+            cfg.data_size,
+            cfg.dgp.dim_x,
+            cfg.dgp.noise_std,
+            synthetic_test_data_size,
         )
     elif cfg.dgp.name == "regression-fixed-dependent":
         dgp = DGPRegressionFixedDependentError(
@@ -757,10 +876,32 @@ def load_dgp(cfg, data_key: PRNGKeyArray) -> DGP:
             cfg.dgp.dim_x,
             s_small=cfg.dgp.s_small,
             s_mod=cfg.dgp.s_mod,
+            test_data_size=synthetic_test_data_size,
         )
     elif cfg.dgp.name == "regression-fixed-non-normal":
         dgp = DGPRegressionFixedNonNormalError(
-            data_key, cfg.data_size, cfg.dgp.dim_x, df=cfg.dgp.df
+            data_key,
+            cfg.data_size,
+            cfg.dgp.dim_x,
+            df=cfg.dgp.df,
+            test_data_size=synthetic_test_data_size,
+        )
+    elif cfg.dgp.name == "regression-wm":
+        dgp = DGPLinearRegressionWM(data_key, cfg.data_size, synthetic_test_data_size)
+    elif cfg.dgp.name == "dependent-error-wm":
+        dgp = DGPDependentErrorWM(
+            data_key,
+            cfg.data_size,
+            s_small=cfg.dgp.s_small,
+            s_mod=cfg.dgp.s_mod,
+            test_data_size=synthetic_test_data_size,
+        )
+    elif cfg.dgp.name == "non-normal-wm":
+        dgp = DGPNonNormalErrorWM(
+            data_key,
+            cfg.data_size,
+            df=cfg.dgp.df,
+            test_data_size=synthetic_test_data_size,
         )
     elif cfg.dgp.name == "quake":
         dgp = DGPRegressionOpenML(data_key, cfg.data_size, 550, -1, 2)

@@ -45,11 +45,15 @@ def main(cfg: DictConfig):
     dim_x = dgp.train_data["x"].shape[-1]
 
     # Setup prediction rule
-    if cfg.dgp.name.startswith("regression-fixed"):
+    if cfg.dgp.name.startswith("regression-fixed") or cfg.dgp.name in [
+        "regression-wm",
+        "dependent-error-wm",
+        "non-normal-wm",
+    ]:
         pred_rule = TabPFNRegressorPredRule(
             [False] * dim_x, cfg.n_estimators, cfg.average_before_softmax
         )
-    elif cfg.dgp.name.startswith("classification-fixed"):
+    elif cfg.dgp.name.startswith("classification-fixed") or cfg.dgp.name == "classification-scm":
         pred_rule = TabPFNClassifierPredRule(
             [False] * dim_x, cfg.n_estimators, cfg.average_before_softmax
         )
