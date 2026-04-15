@@ -3,9 +3,6 @@ defaults:
   - synthetic-test
   - _self_
 
-dgp:
-  name: vehicle
-
 data_size: 100
 num_queries: 24
 rollout_times: 8
