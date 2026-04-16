@@ -95,6 +95,7 @@ def single_rollout_belief_trajectory(
 
 def plot_mean_belief(
     mean_belief: np.ndarray,
+    std_belief: np.ndarray,
     query_indices: np.ndarray,
     class_labels: np.ndarray,
     queries_per_figure: int,
@@ -127,6 +128,17 @@ def plot_mean_belief(
                     markersize=2.2,
                     label=f"class {class_idx} ({class_labels[class_idx]})",
                 )
+                lower = np.clip(
+                    mean_belief[:, query_pos, class_idx] - std_belief[:, query_pos, class_idx],
+                    0.0,
+                    1.0,
+                )
+                upper = np.clip(
+                    mean_belief[:, query_pos, class_idx] + std_belief[:, query_pos, class_idx],
+                    0.0,
+                    1.0,
+                )
+                ax.fill_between(depth, lower, upper, color=line.get_color(), alpha=0.18)
                 line_handles.append(line)
             if class_handles is None:
                 class_handles = line_handles
@@ -209,11 +221,13 @@ def main(cfg: DictConfig) -> None:
         )
 
     mean_belief = beliefs.mean(axis=0)
+    std_belief = beliefs.std(axis=0)
     utils.write_to(
         f"{outdir}/belief-trajectory.pickle",
         {
             "beliefs": beliefs,
             "mean_belief": mean_belief,
+            "std_belief": std_belief,
             "query_idx": query_idx,
             "x_query": x_query,
             "y_query": y_query,
@@ -223,6 +237,7 @@ def main(cfg: DictConfig) -> None:
     )
     plot_mean_belief(
         mean_belief,
+        std_belief,
         query_idx,
         class_labels,
         cfg.queries_per_figure,
