@@ -10,6 +10,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
+import belief_metrics
 import utils
 from dgp import OPENML_BINARY_CLASSIFICATION, OPENML_CLASSIFICATION, load_dgp
 from rollout import TabPFNClassifierPredRule, get_x_new
@@ -235,6 +236,26 @@ def main(cfg: DictConfig) -> None:
         },
         verbose=True,
     )
+    if cfg.metrics.emd.enabled:
+        emd_metrics = belief_metrics.compute_expected_martingale_drift(
+            mean_belief,
+            distance_name=cfg.metrics.emd.distance,
+            reference_depth=cfg.metrics.emd.reference_depth,
+            average_from_depth=cfg.metrics.emd.average_from_depth,
+        )
+        emd_metrics["query_idx"] = query_idx
+        emd_metrics["x_query"] = x_query
+        emd_metrics["y_query"] = y_query
+        utils.write_to(
+            f"{outdir}/metrics/expected-martingale-drift.pickle",
+            emd_metrics,
+            verbose=True,
+        )
+        logging.info(
+            "Global EMD (%s): %.6f",
+            cfg.metrics.emd.distance,
+            emd_metrics["global_emd"],
+        )
     plot_mean_belief(
         mean_belief,
         std_belief,
