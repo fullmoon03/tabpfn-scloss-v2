@@ -21,7 +21,11 @@ def make_classifier_pred_rule(
     cfg: DictConfig, dgp: object
 ) -> TabPFNClassifierPredRule:
     dim_x = dgp.train_data["x"].shape[-1]
-    if cfg.dgp.name.startswith("classification-fixed") or cfg.dgp.name == "classification-scm":
+    if (
+        cfg.dgp.name.startswith("classification-fixed")
+        or cfg.dgp.name == "classification-linear"
+        or cfg.dgp.name.startswith("classification-scm_")
+    ):
         categorical_x = [False] * dim_x
     elif cfg.dgp.name in OPENML_CLASSIFICATION + OPENML_BINARY_CLASSIFICATION:
         categorical_x = dgp.categorical_x

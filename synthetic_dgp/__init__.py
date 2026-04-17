@@ -2,6 +2,7 @@ from .base import SyntheticGenerator, key_to_seed
 from .classification import (
     ClassificationFixedGenerator,
     ClassificationFixedGMMLinkGenerator,
+    ClassificationLinearGenerator,
     ClassificationPriorGenerator,
 )
 from .regression import (
@@ -10,13 +11,14 @@ from .regression import (
     RegressionFixedNonNormalErrorGenerator,
     RegressionPriorGenerator,
 )
-from .scm import (
-    SCMClassificationGenerator,
-    SCMHyperparameters,
-    SCMParameters,
-    generate_scm_classification_dataset,
-    sample_scm_parameters,
+from .scm_nn import (
+    SCMNNClassificationGenerator,
+    SCMNNHyperparameters,
+    SCMNNParameters,
+    generate_scm_nn_classification_dataset,
+    sample_scm_nn_parameters,
 )
+from .scm_dag import SCMDagClassificationGenerator
 from .wu_martin import (
     DependentErrorWMGenerator,
     LinearRegressionWMGenerator,
@@ -26,9 +28,10 @@ from .wu_martin import (
 __all__ = [
     "ClassificationFixedGenerator",
     "ClassificationFixedGMMLinkGenerator",
+    "ClassificationLinearGenerator",
     "ClassificationPriorGenerator",
     "DependentErrorWMGenerator",
-    "generate_scm_classification_dataset",
+    "generate_scm_nn_classification_dataset",
     "key_to_seed",
     "LinearRegressionWMGenerator",
     "NonNormalErrorWMGenerator",
@@ -36,9 +39,10 @@ __all__ = [
     "RegressionFixedGenerator",
     "RegressionFixedNonNormalErrorGenerator",
     "RegressionPriorGenerator",
-    "SCMClassificationGenerator",
-    "SCMHyperparameters",
-    "SCMParameters",
-    "sample_scm_parameters",
+    "SCMNNClassificationGenerator",
+    "SCMNNHyperparameters",
+    "SCMNNParameters",
+    "sample_scm_nn_parameters",
+    "SCMDagClassificationGenerator",
     "SyntheticGenerator",
 ]

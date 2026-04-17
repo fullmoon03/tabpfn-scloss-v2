@@ -15,6 +15,7 @@ from ucimlrepo import fetch_ucirepo
 from synthetic_dgp import (
     ClassificationFixedGenerator,
     ClassificationFixedGMMLinkGenerator,
+    ClassificationLinearGenerator,
     ClassificationPriorGenerator,
     DependentErrorWMGenerator,
     LinearRegressionWMGenerator,
@@ -23,7 +24,8 @@ from synthetic_dgp import (
     RegressionFixedGenerator,
     RegressionFixedNonNormalErrorGenerator,
     RegressionPriorGenerator,
-    SCMClassificationGenerator,
+    SCMNNClassificationGenerator,
+    SCMDagClassificationGenerator,
 )
 import utils
 
@@ -434,6 +436,40 @@ class DGPClassificationFixedGMMLink(DGPGeneratorBacked):
         )
 
 
+class DGPClassificationLinear(DGPGeneratorBacked):
+    num_classes: int
+
+    def __init__(
+        self,
+        key: PRNGKeyArray,
+        n: int,
+        dim_x: int,
+        num_classes: int,
+        test_data_size: int = 0,
+    ):
+        param_key = jax.random.split(key, 2)[0]
+        param_seed = int(
+            jax.random.randint(
+                param_key, shape=(), minval=0, maxval=2_147_483_647
+            ).item()
+        )
+        self.num_classes = num_classes
+        super().__init__(
+            key,
+            n,
+            ClassificationLinearGenerator(dim_x, num_classes, seed=param_seed),
+            test_data_size=test_data_size,
+        )
+        classes, counts = np.unique(self.train_data["y"], return_counts=True)
+        logging.info(
+            "Linear classification generated: "
+            f"n_features={dim_x}, "
+            f"requested_classes={num_classes}, "
+            f"observed_classes={classes.tolist()}, "
+            f"class_counts={counts.tolist()}"
+        )
+
+
 class DGPRegressionFixed(DGPGeneratorBacked):
     def __init__(
         self,
@@ -481,7 +517,7 @@ class DGPRegressionFixedNonNormalError(DGPGeneratorBacked):
         )
 
 
-class DGPClassificationSCM(DGPGeneratorBacked):
+class DGPClassificationSCMNN(DGPGeneratorBacked):
     num_classes: int
 
     def __init__(
@@ -502,14 +538,54 @@ class DGPClassificationSCM(DGPGeneratorBacked):
         super().__init__(
             key,
             n,
-            SCMClassificationGenerator(dim_x, num_classes, seed=param_seed),
+            SCMNNClassificationGenerator(dim_x, num_classes, seed=param_seed),
             test_data_size=test_data_size,
         )
         classes, counts = np.unique(self.train_data["y"], return_counts=True)
         logging.info(
-            "SCM classification generated: "
+            "SCM-NN classification generated: "
             f"n_features={dim_x}, "
             f"requested_classes={num_classes}, "
+            f"observed_classes={classes.tolist()}, "
+            f"class_counts={counts.tolist()}"
+        )
+
+
+class DGPClassificationSCMDag(DGPGeneratorBacked):
+    num_classes: int
+    max_parents: int
+
+    def __init__(
+        self,
+        key: PRNGKeyArray,
+        n: int,
+        dim_x: int,
+        num_classes: int,
+        max_parents: int = 2,
+        test_data_size: int = 0,
+    ):
+        param_key = jax.random.split(key, 2)[0]
+        param_seed = int(
+            jax.random.randint(
+                param_key, shape=(), minval=0, maxval=2_147_483_647
+            ).item()
+        )
+        self.num_classes = num_classes
+        self.max_parents = max_parents
+        super().__init__(
+            key,
+            n,
+            SCMDagClassificationGenerator(
+                dim_x, num_classes, seed=param_seed, max_parents=max_parents
+            ),
+            test_data_size=test_data_size,
+        )
+        classes, counts = np.unique(self.train_data["y"], return_counts=True)
+        logging.info(
+            "SCM-DAG classification generated: "
+            f"n_features={dim_x}, "
+            f"requested_classes={num_classes}, "
+            f"max_parents={max_parents}, "
             f"observed_classes={classes.tolist()}, "
             f"class_counts={counts.tolist()}"
         )
@@ -618,12 +694,29 @@ def load_dgp(cfg, data_key: PRNGKeyArray) -> DGP:
             cfg.dgp.a,
             synthetic_test_data_size,
         )
-    elif cfg.dgp.name == "classification-scm":
-        dgp = DGPClassificationSCM(
+    elif cfg.dgp.name == "classification-linear":
+        dgp = DGPClassificationLinear(
+            data_key,
+            cfg.data_size,
+            cfg.dgp.dim_x,
+            cfg.dgp.num_classes,
+            synthetic_test_data_size,
+        )
+    elif cfg.dgp.name == "classification-scm_nn":
+        dgp = DGPClassificationSCMNN(
             data_key,
             cfg.data_size,
             dim_x=cfg.dgp.dim_x,
             num_classes=cfg.dgp.num_classes,
+            test_data_size=synthetic_test_data_size,
+        )
+    elif cfg.dgp.name == "classification-scm_dag":
+        dgp = DGPClassificationSCMDag(
+            data_key,
+            cfg.data_size,
+            dim_x=cfg.dgp.dim_x,
+            num_classes=cfg.dgp.num_classes,
+            max_parents=getattr(cfg.dgp, "max_parents", 2),
             test_data_size=synthetic_test_data_size,
         )
     elif cfg.dgp.name == "regression-fixed":

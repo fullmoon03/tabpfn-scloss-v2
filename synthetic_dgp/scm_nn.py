@@ -16,7 +16,7 @@ ActivationName = str
 
 
 @dataclass
-class SCMHyperparameters:
+class SCMNNHyperparameters:
     num_features: int
     num_classes: int
     num_causes: int
@@ -35,8 +35,8 @@ class SCMHyperparameters:
 
 
 @dataclass
-class SCMParameters:
-    hyperparameters: SCMHyperparameters
+class SCMNNParameters:
+    hyperparameters: SCMNNHyperparameters
     cause_specs: list[dict[str, Any]]
     layer_weights: list[np.ndarray]
     class_weights: np.ndarray
@@ -92,7 +92,7 @@ def _sample_hyperparameters(
     rng: np.random.Generator,
     num_features: int,
     num_classes: int,
-) -> SCMHyperparameters:
+) -> SCMNNHyperparameters:
     num_causes = int(
         max(
             num_features + 1,
@@ -130,7 +130,7 @@ def _sample_hyperparameters(
         )
     )
 
-    return SCMHyperparameters(
+    return SCMNNHyperparameters(
         num_features=num_features,
         num_classes=num_classes,
         num_causes=num_causes,
@@ -192,6 +192,7 @@ def _sample_causes(
             col = rng.normal(spec["mean"], spec["std"], size=num_samples)
         elif spec["kind"] == "categorical":
             probs = np.asarray(spec["probs"], dtype=np.float64)
+            probs = probs / probs.sum()
             col = rng.choice(np.arange(probs.size), size=num_samples, p=probs)
             col = col.astype(np.float32)
             col = (col - col.mean()) / max(col.std(), 1e-6)
@@ -243,7 +244,7 @@ def _make_weight(
 def _forward_hidden(
     rng: np.random.Generator,
     causes: np.ndarray,
-    params: SCMParameters,
+    params: SCMNNParameters,
 ) -> tuple[list[np.ndarray], np.ndarray]:
     hp = params.hyperparameters
     activation = _get_activation(hp.activation)
@@ -283,11 +284,11 @@ def _normalize_features(x: np.ndarray) -> np.ndarray:
     return ((x - mean) / std).astype(np.float32)
 
 
-def sample_scm_parameters(
+def sample_scm_nn_parameters(
     num_features: int,
     num_classes: int,
     seed: int | None = None,
-) -> SCMParameters:
+) -> SCMNNParameters:
     if num_features < 1:
         raise ValueError("num_features must be at least 1")
     if num_classes < 2:
@@ -325,7 +326,7 @@ def sample_scm_parameters(
     ).astype(np.float32)
     class_bias = rng.normal(0.0, hp.init_std, size=(hp.num_classes,)).astype(np.float32)
 
-    return SCMParameters(
+    return SCMNNParameters(
         hyperparameters=hp,
         cause_specs=cause_specs,
         layer_weights=layer_weights,
@@ -336,9 +337,9 @@ def sample_scm_parameters(
     )
 
 
-def generate_scm_classification_dataset(
+def generate_scm_nn_classification_dataset(
     num_samples: int,
-    parameters: SCMParameters,
+    parameters: SCMNNParameters,
     seed: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     if num_samples <= 0:
@@ -376,14 +377,14 @@ def generate_scm_classification_dataset(
     return x.astype(np.float32), y, metadata
 
 
-class SCMClassificationGenerator(SyntheticGenerator):
+class SCMNNClassificationGenerator(SyntheticGenerator):
     num_classes: int
-    parameters: SCMParameters
+    parameters: SCMNNParameters
 
     def __init__(self, num_features: int, num_classes: int, seed: int | None = None):
         super().__init__(num_features)
         self.num_classes = num_classes
-        self.parameters = sample_scm_parameters(
+        self.parameters = sample_scm_nn_parameters(
             num_features=num_features,
             num_classes=num_classes,
             seed=seed,
@@ -395,7 +396,7 @@ class SCMClassificationGenerator(SyntheticGenerator):
 
     def sample(self, key: PRNGKeyArray, n: int) -> dict[str, object]:
         seed = key_to_seed(key)
-        x, y, metadata = generate_scm_classification_dataset(
+        x, y, metadata = generate_scm_nn_classification_dataset(
             num_samples=n,
             parameters=self.parameters,
             seed=seed,
@@ -436,12 +437,12 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    params = sample_scm_parameters(
+    params = sample_scm_nn_parameters(
         num_features=args.num_features,
         num_classes=args.num_classes,
         seed=args.seed,
     )
-    x, y, metadata = generate_scm_classification_dataset(
+    x, y, metadata = generate_scm_nn_classification_dataset(
         num_samples=args.num_samples,
         parameters=params,
         seed=args.seed + 1,

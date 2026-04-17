@@ -53,7 +53,11 @@ def main(cfg: DictConfig):
         pred_rule = TabPFNRegressorPredRule(
             [False] * dim_x, cfg.n_estimators, cfg.average_before_softmax
         )
-    elif cfg.dgp.name.startswith("classification-fixed") or cfg.dgp.name == "classification-scm":
+    elif (
+        cfg.dgp.name.startswith("classification-fixed")
+        or cfg.dgp.name == "classification-linear"
+        or cfg.dgp.name.startswith("classification-scm_")
+    ):
         pred_rule = TabPFNClassifierPredRule(
             [False] * dim_x, cfg.n_estimators, cfg.average_before_softmax
         )

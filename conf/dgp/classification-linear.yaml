@@ -1,0 +1,3 @@
+name: classification-linear
+dim_x: 10
+num_classes: 4

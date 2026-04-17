@@ -1,0 +1,4 @@
+name: classification-scm_dag
+dim_x: 10
+num_classes: 4
+max_parents: 2
