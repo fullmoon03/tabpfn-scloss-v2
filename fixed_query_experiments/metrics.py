@@ -20,6 +20,7 @@ def probability_distance(
             "Probability tensors must be broadcast-compatible, "
             f"got {p.shape} and {q.shape}."
         ) from exc
+
     diff = p - q
     if distance_name == "l1":
         return np.abs(diff).sum(axis=-1)
@@ -46,7 +47,9 @@ def compute_expected_martingale_drift(
 
     num_depths = mean_belief.shape[0]
     if not 0 <= reference_depth < num_depths:
-        raise ValueError(f"reference_depth must be in [0, {num_depths}), got {reference_depth}.")
+        raise ValueError(
+            f"reference_depth must be in [0, {num_depths}), got {reference_depth}."
+        )
     if not 0 <= average_from_depth < num_depths:
         raise ValueError(
             f"average_from_depth must be in [0, {num_depths}), got {average_from_depth}."
@@ -150,7 +153,7 @@ def compute_true_label_variance_trajectory(
         beliefs, class_labels, y_query
     )
 
-    num_rollouts, num_depths, num_queries = theta_true.shape
+    num_rollouts, num_depths, _ = theta_true.shape
     if start_depth < 0 or start_depth >= num_depths:
         raise ValueError(
             f"start_depth must be in [0, {num_depths}), got {start_depth}."

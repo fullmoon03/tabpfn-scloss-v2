@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import warnings
-from typing import Callable
 
 import jax
 import numpy as np
@@ -9,7 +8,7 @@ from omegaconf import DictConfig
 from tqdm import tqdm
 
 from dgp import OPENML_BINARY_CLASSIFICATION, OPENML_CLASSIFICATION
-from rollout import TabPFNClassifierPredRule, get_x_new
+from rollout import TabPFNClassifierPredRule, forward_sampling, get_x_new
 
 warnings.filterwarnings(
     "ignore",
@@ -18,7 +17,9 @@ warnings.filterwarnings(
 )
 
 
-def make_classifier_pred_rule(cfg: DictConfig, dgp: object) -> TabPFNClassifierPredRule:
+def make_classifier_pred_rule(
+    cfg: DictConfig, dgp: object
+) -> TabPFNClassifierPredRule:
     dim_x = dgp.train_data["x"].shape[-1]
     if cfg.dgp.name.startswith("classification-fixed") or cfg.dgp.name == "classification-scm":
         categorical_x = [False] * dim_x
@@ -34,16 +35,28 @@ def make_classifier_pred_rule(cfg: DictConfig, dgp: object) -> TabPFNClassifierP
     )
 
 
+def sample_queries(
+    data: dict[str, np.ndarray], num_queries: int, seed: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    n_data = data["x"].shape[0]
+    if n_data < num_queries:
+        raise ValueError(f"Need at least {num_queries} queries, found {n_data}.")
+
+    rng = np.random.default_rng(seed)
+    query_idx = np.sort(rng.choice(n_data, size=num_queries, replace=False))
+    return query_idx, data["x"][query_idx], data["y"][query_idx]
+
+
 def sample_test_queries(
     test_data: dict[str, np.ndarray], num_queries: int, seed: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    n_test = test_data["x"].shape[0]
-    if n_test < num_queries:
-        raise ValueError(f"Need at least {num_queries} test queries, found {n_test}.")
+    return sample_queries(test_data, num_queries, seed)
 
-    rng = np.random.default_rng(seed)
-    query_idx = np.sort(rng.choice(n_test, size=num_queries, replace=False))
-    return query_idx, test_data["x"][query_idx], test_data["y"][query_idx]
+
+def sample_context_queries(
+    train_data: dict[str, np.ndarray], num_queries: int, seed: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    return sample_queries(train_data, num_queries, seed)
 
 
 def query_belief(
@@ -122,3 +135,79 @@ def collect_rollout_beliefs(
         )
 
     return beliefs, class_labels
+
+
+def sample_reference_trajectory(
+    cfg: DictConfig,
+    dgp: object,
+    key: jax.Array,
+) -> tuple[np.ndarray, np.ndarray]:
+    pred_rule = make_classifier_pred_rule(cfg, dgp)
+    return forward_sampling(
+        key,
+        pred_rule.sample,
+        dgp.train_data["x"],
+        dgp.train_data["y"],
+        cfg.rollout_length,
+        show_progress=False,
+    )
+
+
+def sample_one_step_conditional_belief(
+    cfg: DictConfig,
+    dgp: object,
+    key: jax.Array,
+    x_context: np.ndarray,
+    y_context: np.ndarray,
+    x_query: np.ndarray,
+) -> np.ndarray:
+    pred_rule = make_classifier_pred_rule(cfg, dgp)
+    rkey, x_key = jax.random.split(key)
+    x_new = np.asarray(get_x_new(x_key, x_context))
+    rkey, y_key = jax.random.split(rkey)
+    y_new = pred_rule.sample(y_key, x_new, x_context, y_context)
+
+    x_next = np.concatenate([x_context, x_new], axis=0)
+    y_next = np.concatenate([y_context, np.atleast_1d(y_new)], axis=0)
+
+    pred_rule = make_classifier_pred_rule(cfg, dgp)
+    pred_rule.fit(x_next, y_next)
+    return pred_rule.predict_proba(x_query)
+
+
+def collect_one_step_conditional_beliefs(
+    cfg: DictConfig,
+    dgp: object,
+    base_key: jax.Array,
+    x_reference: np.ndarray,
+    y_reference: np.ndarray,
+    x_query: np.ndarray,
+) -> np.ndarray:
+    n_train = dgp.train_data["x"].shape[0]
+    num_depths = cfg.rollout_length + 1
+
+    pred_rule = make_classifier_pred_rule(cfg, dgp)
+    pred_rule.fit(dgp.train_data["x"], dgp.train_data["y"])
+    num_classes = np.asarray(pred_rule.classes_).shape[0]
+
+    conditional_beliefs = np.empty(
+        (num_depths, cfg.num_posterior_samples, cfg.num_queries, num_classes),
+        dtype=np.float64,
+    )
+
+    for depth in tqdm(range(num_depths), desc="Reference depths"):
+        x_context = x_reference[: n_train + depth]
+        y_context = y_reference[: n_train + depth]
+        for sample_idx in range(cfg.num_posterior_samples):
+            one_step_key = jax.random.fold_in(base_key, depth)
+            one_step_key = jax.random.fold_in(one_step_key, sample_idx)
+            conditional_beliefs[depth, sample_idx] = sample_one_step_conditional_belief(
+                cfg,
+                dgp,
+                one_step_key,
+                x_context,
+                y_context,
+                x_query,
+            )
+
+    return conditional_beliefs

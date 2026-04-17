@@ -5,6 +5,7 @@ defaults:
 
 data_size: 100
 num_queries: 24
+query_source: test_data
 rollout_length: 100
 num_posterior_samples: 50
 seed: 999
@@ -21,7 +22,7 @@ git: ${githash:}
 
 hydra:
   run:
-    dir: "./outputs/${date}/conditional-theta-variance/name=${dgp.name}_data=${data_size}_queries=${num_queries}_rollout_length=${rollout_length}_posterior_samples=${num_posterior_samples}_seed=${seed}"
+    dir: "./outputs/${date}/conditional-theta-variance/name=${dgp.name}_data=${data_size}_queries=${num_queries}_rollout_length=${rollout_length}_posterior_samples=${num_posterior_samples}_seed=${seed}_query_source=${query_source}"
   sweep:
     dir: ${hydra.run.dir}
     subdir: .

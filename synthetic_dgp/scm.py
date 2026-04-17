@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from jaxtyping import Array, PRNGKeyArray
+
+from .base import SyntheticGenerator, key_to_seed
 
 
 ActivationName = str
@@ -371,6 +374,37 @@ def generate_scm_classification_dataset(
         "feature_idx": parameters.feature_idx.tolist(),
     }
     return x.astype(np.float32), y, metadata
+
+
+class SCMClassificationGenerator(SyntheticGenerator):
+    num_classes: int
+    parameters: SCMParameters
+
+    def __init__(self, num_features: int, num_classes: int, seed: int | None = None):
+        super().__init__(num_features)
+        self.num_classes = num_classes
+        self.parameters = sample_scm_parameters(
+            num_features=num_features,
+            num_classes=num_classes,
+            seed=seed,
+        )
+        self.metadata = {"hyperparameters": self.parameters.hyperparameters}
+
+    def sample_x(self, key: PRNGKeyArray, n: int) -> Array:
+        return self.sample(key, n)["x"]
+
+    def sample(self, key: PRNGKeyArray, n: int) -> dict[str, object]:
+        seed = key_to_seed(key)
+        x, y, metadata = generate_scm_classification_dataset(
+            num_samples=n,
+            parameters=self.parameters,
+            seed=seed,
+        )
+        return {
+            "x": np.asarray(x, dtype=np.float64),
+            "y": np.asarray(y, dtype=np.int16),
+            "metadata": metadata,
+        }
 
 
 def save_dataset(
