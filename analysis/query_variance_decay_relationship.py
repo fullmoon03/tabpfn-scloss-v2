@@ -36,16 +36,25 @@ SCATTER_FEATURE_COLUMNS = [
     "init_margin_top1_top2",
     "init_true_class_prob",
 ]
-HIGHLIGHT_QUERY_IDS = [60, 273, 395, 514, 580, 586, 732]
-HIGHLIGHT_COLORS = {
-    60: "#d62728",
-    273: "#ff7f0e",
-    395: "#2ca02c",
-    514: "#9467bd",
-    580: "#8c564b",
-    586: "#e377c2",
-    732: "#17becf",
-}
+SLOPE_WINDOWS = [10, 20, 30, 50, 100]
+
+
+def make_highlight_color_map(query_ids: list[int]) -> dict[int, str]:
+    palette = [
+        "#d62728",
+        "#ff7f0e",
+        "#2ca02c",
+        "#9467bd",
+        "#8c564b",
+        "#e377c2",
+        "#17becf",
+        "#bcbd22",
+        "#1f77b4",
+        "#7f7f7f",
+        "#8c564b",
+        "#aec7e8",
+    ]
+    return {qid: palette[i % len(palette)] for i, qid in enumerate(query_ids)}
 
 
 def parse_output_metadata(output_dir: Path) -> dict[str, int | str]:
@@ -219,43 +228,29 @@ def compute_decay_features(variance_df: pd.DataFrame) -> pd.DataFrame:
         [col for col in variance_df.columns if col.startswith("var_t")],
         key=lambda col: int(col.replace("var_t", "")),
     )
-    if "var_t1" not in variance_df.columns or "var_t100" not in variance_df.columns:
-        raise ValueError("Expected var_t1 ... var_t100 columns in variance CSV.")
+    if "var_t1" not in variance_df.columns:
+        raise ValueError("Expected at least var_t1 in variance CSV.")
+
+    max_window = max(int(col.replace("var_t", "")) for col in var_cols)
+    available_windows = [window for window in SLOPE_WINDOWS if window <= max_window]
 
     records: list[dict[str, float]] = []
-    t10 = np.arange(1, 11, dtype=np.float64)
-    t20 = np.arange(1, 21, dtype=np.float64)
-    t30 = np.arange(1, 31, dtype=np.float64)
-    t50 = np.arange(1, 51, dtype=np.float64)
-    t100 = np.arange(1, 101, dtype=np.float64)
     for _, row in variance_df.iterrows():
-        var_1_to_10 = row[[f"var_t{t}" for t in range(1, 11)]].to_numpy(dtype=np.float64)
-        var_1_to_20 = row[[f"var_t{t}" for t in range(1, 21)]].to_numpy(dtype=np.float64)
-        var_1_to_30 = row[[f"var_t{t}" for t in range(1, 31)]].to_numpy(dtype=np.float64)
-        var_1_to_50 = row[[f"var_t{t}" for t in range(1, 51)]].to_numpy(dtype=np.float64)
-        var_1_to_100 = row[[f"var_t{t}" for t in range(1, 101)]].to_numpy(dtype=np.float64)
-        records.append(
-            {
-                "init_variance": float(row["var_t1"]),
-                "slope_t_le_10": fit_loglog_slope(t10, var_1_to_10),
-                "slope_t_le_20": fit_loglog_slope(t20, var_1_to_20),
-                "slope_t_le_30": fit_loglog_slope(t30, var_1_to_30),
-                "slope_t_le_50": fit_loglog_slope(t50, var_1_to_50),
-                "slope_t_le_100": fit_loglog_slope(t100, var_1_to_100),
-            }
-        )
+        record: dict[str, float] = {"init_variance": float(row["var_t1"])}
+        for window in available_windows:
+            t_values = np.arange(1, window + 1, dtype=np.float64)
+            var_values = row[[f"var_t{t}" for t in range(1, window + 1)]].to_numpy(
+                dtype=np.float64
+            )
+            record[f"slope_t_le_{window}"] = fit_loglog_slope(t_values, var_values)
+        records.append(record)
     return pd.DataFrame(records)
 
 
 def compute_correlation_rows(summary_df: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict[str, float | str]] = []
-    for target in [
-        "slope_t_le_10",
-        "slope_t_le_20",
-        "slope_t_le_30",
-        "slope_t_le_50",
-        "slope_t_le_100",
-    ]:
+    target_columns = [f"slope_t_le_{window}" for window in SLOPE_WINDOWS if f"slope_t_le_{window}" in summary_df.columns]
+    for target in target_columns:
         y = summary_df[target].to_numpy(dtype=np.float64)
         for feature in FEATURE_COLUMNS:
             x = summary_df[feature].to_numpy(dtype=np.float64)
@@ -278,6 +273,7 @@ def plot_scatter_grid(
     summary_df: pd.DataFrame,
     target: str,
     output_path: Path,
+    highlight_query_ids: list[int],
 ) -> None:
     feature_labels = {
         "init_entropy": "Initial predictive entropy",
@@ -289,20 +285,21 @@ def plot_scatter_grid(
     fig, axes = plt.subplots(2, 3, figsize=(16, 9))
     axes = np.asarray(axes).reshape(-1)
     y = summary_df[target].to_numpy(dtype=np.float64)
-    highlight_mask = summary_df["query_id"].isin(HIGHLIGHT_QUERY_IDS).to_numpy()
+    highlight_mask = summary_df["query_id"].isin(highlight_query_ids).to_numpy()
     base_mask = ~highlight_mask
+    highlight_colors = make_highlight_color_map(highlight_query_ids)
 
     for ax, feature in zip(axes, SCATTER_FEATURE_COLUMNS):
         x = summary_df[feature].to_numpy(dtype=np.float64)
         ax.scatter(x[base_mask], y[base_mask], color="#94a3b8", alpha=0.8, s=38)
-        for qid in HIGHLIGHT_QUERY_IDS:
+        for qid in highlight_query_ids:
             qmask = summary_df["query_id"].to_numpy() == qid
             if not np.any(qmask):
                 continue
             ax.scatter(
                 x[qmask],
                 y[qmask],
-                color=HIGHLIGHT_COLORS[qid],
+                color=highlight_colors[qid],
                 edgecolor="black",
                 linewidth=0.5,
                 alpha=0.95,
@@ -335,13 +332,13 @@ def plot_scatter_grid(
             [0],
             marker="o",
             color="w",
-            markerfacecolor=HIGHLIGHT_COLORS[qid],
+            markerfacecolor=highlight_colors[qid],
             markeredgecolor="black",
             markeredgewidth=0.5,
             markersize=7,
             label=f"q={qid}",
         )
-        for qid in HIGHLIGHT_QUERY_IDS
+        for qid in highlight_query_ids
     ]
     fig.suptitle(f"Query Features vs Variance Decay: {target}", y=0.995)
     fig.legend(
@@ -438,20 +435,21 @@ def write_short_summary(
         "",
         "## Strongest feature associations with slope_t_le_50 (by |Spearman rho|)",
     ]
-    for _, row in top50.head(3).iterrows():
-        lines.append(
-            f"- `{row['feature_name']}`: Pearson r={row['pearson_r']:.3f}, Spearman rho={row['spearman_rho']:.3f}"
-        )
-    lines.extend(
-        [
-            "",
-            "## Strongest feature associations with slope_t_le_100 (by |Spearman rho|)",
-        ]
-    )
-    for _, row in top100.head(3).iterrows():
-        lines.append(
-            f"- `{row['feature_name']}`: Pearson r={row['pearson_r']:.3f}, Spearman rho={row['spearman_rho']:.3f}"
-        )
+    if not top50.empty:
+        for _, row in top50.head(3).iterrows():
+            lines.append(
+                f"- `{row['feature_name']}`: Pearson r={row['pearson_r']:.3f}, Spearman rho={row['spearman_rho']:.3f}"
+            )
+    else:
+        lines.append("- `slope_t_le_50` not available for this run.")
+    lines.extend(["", "## Strongest feature associations with slope_t_le_100 (by |Spearman rho|)"])
+    if not top100.empty:
+        for _, row in top100.head(3).iterrows():
+            lines.append(
+                f"- `{row['feature_name']}`: Pearson r={row['pearson_r']:.3f}, Spearman rho={row['spearman_rho']:.3f}"
+            )
+    else:
+        lines.append("- `slope_t_le_100` not available for this run.")
     lines.extend(
         [
             "",
@@ -467,7 +465,7 @@ def write_short_summary(
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def run_analysis(output_dir: Path, k: int) -> None:
+def run_analysis(output_dir: Path, k: int, highlight_query_ids: list[int] | None = None) -> None:
     metadata = parse_output_metadata(output_dir)
     cfg = load_analysis_cfg(metadata)
 
@@ -517,31 +515,18 @@ def run_analysis(output_dir: Path, k: int) -> None:
     correlations = compute_correlation_rows(output_summary)
     correlations.to_csv(output_dir / "query_feature_vs_variance_decay_correlations.csv", index=False)
 
-    plot_scatter_grid(
-        output_summary,
-        "slope_t_le_10",
-        output_dir / "query_feature_vs_variance_decay_scatter_slope_t_le_10.png",
-    )
-    plot_scatter_grid(
-        output_summary,
-        "slope_t_le_20",
-        output_dir / "query_feature_vs_variance_decay_scatter_slope_t_le_20.png",
-    )
-    plot_scatter_grid(
-        output_summary,
-        "slope_t_le_30",
-        output_dir / "query_feature_vs_variance_decay_scatter_slope_t_le_30.png",
-    )
-    plot_scatter_grid(
-        output_summary,
-        "slope_t_le_50",
-        output_dir / "query_feature_vs_variance_decay_scatter_slope_t_le_50.png",
-    )
-    plot_scatter_grid(
-        output_summary,
-        "slope_t_le_100",
-        output_dir / "query_feature_vs_variance_decay_scatter_slope_t_le_100.png",
-    )
+    highlight_query_ids = highlight_query_ids or []
+
+    for window in SLOPE_WINDOWS:
+        target = f"slope_t_le_{window}"
+        if target not in output_summary.columns:
+            continue
+        plot_scatter_grid(
+            output_summary,
+            target,
+            output_dir / f"query_feature_vs_variance_decay_scatter_{target}.png",
+            highlight_query_ids,
+        )
     plot_rank_comparison(
         output_summary,
         output_dir / "query_feature_vs_variance_decay_rank_plot.png",
@@ -559,8 +544,19 @@ def main() -> None:
     )
     parser.add_argument("output_dir", type=Path)
     parser.add_argument("--k", type=int, default=5)
+    parser.add_argument(
+        "--highlight-query-ids",
+        type=str,
+        default="",
+        help="Comma-separated query ids to highlight in scatter plots.",
+    )
     args = parser.parse_args()
-    run_analysis(args.output_dir.resolve(), k=args.k)
+    highlight_query_ids = (
+        [int(x.strip()) for x in args.highlight_query_ids.split(",") if x.strip()]
+        if args.highlight_query_ids
+        else []
+    )
+    run_analysis(args.output_dir.resolve(), k=args.k, highlight_query_ids=highlight_query_ids)
 
 
 if __name__ == "__main__":

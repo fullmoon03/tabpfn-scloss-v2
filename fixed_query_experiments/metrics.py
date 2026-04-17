@@ -227,3 +227,75 @@ def compute_query_variance_summary(
         "peak_step": peak_step,
         "max_variance": max_variance,
     }
+
+
+def compute_multiclass_accuracy(
+    probabilities: np.ndarray,
+    class_labels: np.ndarray,
+    y_true: np.ndarray,
+) -> float:
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    pred_idx = np.argmax(probabilities, axis=1)
+    pred_labels = np.asarray(class_labels)[pred_idx]
+    return float(np.mean(pred_labels == np.asarray(y_true)))
+
+
+def compute_multiclass_nll(
+    probabilities: np.ndarray,
+    class_labels: np.ndarray,
+    y_true: np.ndarray,
+    eps: float = 1e-12,
+) -> float:
+    true_probs, _ = select_true_label_probabilities(
+        probabilities[None, :, :], class_labels, y_true
+    )
+    true_probs = np.clip(true_probs[0], eps, 1.0)
+    return float(-np.mean(np.log(true_probs)))
+
+
+def compute_multiclass_ece(
+    probabilities: np.ndarray,
+    class_labels: np.ndarray,
+    y_true: np.ndarray,
+    n_bins: int = 10,
+) -> float:
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    if probabilities.ndim != 2:
+        raise ValueError(
+            f"probabilities must have shape (num_queries, num_classes), got {probabilities.shape}."
+        )
+    pred_idx = np.argmax(probabilities, axis=1)
+    pred_labels = np.asarray(class_labels)[pred_idx]
+    confidences = probabilities[np.arange(probabilities.shape[0]), pred_idx]
+    correctness = (pred_labels == np.asarray(y_true)).astype(np.float64)
+
+    bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
+    ece = 0.0
+    for bin_idx in range(n_bins):
+        left = bin_edges[bin_idx]
+        right = bin_edges[bin_idx + 1]
+        if bin_idx == 0:
+            in_bin = (confidences >= left) & (confidences <= right)
+        else:
+            in_bin = (confidences > left) & (confidences <= right)
+        if not np.any(in_bin):
+            continue
+        bin_accuracy = correctness[in_bin].mean()
+        bin_confidence = confidences[in_bin].mean()
+        ece += in_bin.mean() * abs(bin_accuracy - bin_confidence)
+    return float(ece)
+
+
+def compute_calibration_metrics(
+    probabilities: np.ndarray,
+    class_labels: np.ndarray,
+    y_true: np.ndarray,
+    ece_bins: int = 10,
+) -> dict[str, float]:
+    return {
+        "accuracy": compute_multiclass_accuracy(probabilities, class_labels, y_true),
+        "nll": compute_multiclass_nll(probabilities, class_labels, y_true),
+        "ece": compute_multiclass_ece(
+            probabilities, class_labels, y_true, n_bins=ece_bins
+        ),
+    }
