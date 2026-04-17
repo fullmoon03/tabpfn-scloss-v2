@@ -1,0 +1,27 @@
+defaults:
+  - dgp: openml
+  - synthetic-test
+  - _self_
+
+data_size: 100
+num_queries: 24
+rollout_length: 100
+num_posterior_samples: 50
+seed: 999
+
+n_estimators: 4
+average_before_softmax: False
+
+conditional_theta_variance:
+  ddof: 1
+
+date: ${now:%Y-%m-%d}
+lastrun: ${now:%Y-%m-%dT%H:%M:%S%z}
+git: ${githash:}
+
+hydra:
+  run:
+    dir: "./outputs/${date}/conditional-theta-variance/name=${dgp.name}_data=${data_size}_queries=${num_queries}_rollout_length=${rollout_length}_posterior_samples=${num_posterior_samples}_seed=${seed}"
+  sweep:
+    dir: ${hydra.run.dir}
+    subdir: .

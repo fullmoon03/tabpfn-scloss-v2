@@ -103,6 +103,26 @@ def get_true_class_indices(
     return true_class_idx
 
 
+def select_true_label_probabilities(
+    probabilities: np.ndarray,
+    class_labels: np.ndarray,
+    y_query: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    probabilities = np.asarray(probabilities)
+    if probabilities.ndim < 2:
+        raise ValueError(
+            "probabilities must have shape (..., num_queries, num_classes)."
+        )
+
+    true_class_idx = get_true_class_indices(class_labels, y_query)
+    true_label_probs = np.empty(probabilities.shape[:-1], dtype=np.float64)
+
+    for query_idx, class_idx in enumerate(true_class_idx):
+        true_label_probs[..., query_idx] = probabilities[..., query_idx, class_idx]
+
+    return true_label_probs, true_class_idx
+
+
 def extract_true_label_probabilities(
     beliefs: np.ndarray,
     class_labels: np.ndarray,
@@ -113,13 +133,9 @@ def extract_true_label_probabilities(
             "beliefs must have shape (num_rollouts, num_depths, num_queries, num_classes)."
         )
 
-    true_class_idx = get_true_class_indices(class_labels, y_query)
-    num_rollouts, num_depths, num_queries, _ = beliefs.shape
-    theta_true = np.empty((num_rollouts, num_depths, num_queries), dtype=np.float64)
-
-    for query_idx, class_idx in enumerate(true_class_idx):
-        theta_true[:, :, query_idx] = beliefs[:, :, query_idx, class_idx]
-
+    theta_true, true_class_idx = select_true_label_probabilities(
+        beliefs, class_labels, y_query
+    )
     return theta_true, true_class_idx
 
 
@@ -161,6 +177,46 @@ def compute_true_label_variance_trajectory(
         "true_class_idx": true_class_idx,
         "theta_true": theta_true,
         "theta_by_depth": theta_by_depth,
+        "variance_by_depth": variance_by_depth,
+        "variance_by_query": variance_by_query,
+        "mean_by_depth": mean_by_depth,
+        "mean_by_query": mean_by_query,
+        "peak_step": peak_step,
+        "max_variance": max_variance,
+    }
+
+
+def compute_query_variance_summary(
+    samples_by_depth: np.ndarray,
+    depths: np.ndarray,
+    ddof: int = 1,
+) -> dict[str, np.ndarray | int]:
+    if samples_by_depth.ndim != 3:
+        raise ValueError(
+            "samples_by_depth must have shape (num_depths, num_samples, num_queries)."
+        )
+
+    num_depths, num_samples, _ = samples_by_depth.shape
+    depths = np.asarray(depths)
+    if depths.shape != (num_depths,):
+        raise ValueError(
+            f"depths must have shape ({num_depths},), got {depths.shape}."
+        )
+    if num_samples <= ddof:
+        raise ValueError(
+            f"Need num_samples > ddof to compute sample variance, got {num_samples} and {ddof}."
+        )
+
+    variance_by_depth = np.var(samples_by_depth, axis=1, ddof=ddof)
+    mean_by_depth = np.mean(samples_by_depth, axis=1)
+    variance_by_query = variance_by_depth.T
+    mean_by_query = mean_by_depth.T
+    peak_step = depths[np.argmax(variance_by_query, axis=1)]
+    max_variance = np.max(variance_by_query, axis=1)
+
+    return {
+        "ddof": ddof,
+        "depths": depths,
         "variance_by_depth": variance_by_depth,
         "variance_by_query": variance_by_query,
         "mean_by_depth": mean_by_depth,

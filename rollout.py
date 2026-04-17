@@ -122,6 +122,7 @@ def forward_sampling(
     x_train: Array,
     y_train: Array,
     rollout_length: int,
+    show_progress: bool = True,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Simulate forward rollouts by iteratively sampling x and y.
 
@@ -142,7 +143,9 @@ def forward_sampling(
     x_full = np.concatenate([x_train, np.full((rollout_length, dim_x), -1.0)])
     y_full = np.concatenate([y_train, np.full(rollout_length, -1.0)])
 
-    for i in tqdm(range(len(x_train), len(x_train) + rollout_length)):
+    for i in tqdm(
+        range(len(x_train), len(x_train) + rollout_length), disable=not show_progress
+    ):
         # This loop performs forward sampling
         x_prev = x_full[:i]  # contains i number of data points
         y_prev = y_full[:i]  # contains i number of data points
