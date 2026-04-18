@@ -1,0 +1,32 @@
+defaults:
+  - dgp: openml
+  - synthetic-test
+  - _self_
+
+data_size: 100
+num_queries: 24
+query_source: context
+n_repeats: 200
+rollout_length: 30
+num_posterior_samples: 50
+seed: 999
+
+n_estimators: 4
+average_before_softmax: False
+ece_bins: 5
+slope_windows: [10, 20, 30]
+slope_eps: 1e-12
+
+conditional_theta_variance:
+  ddof: 1
+
+date: ${now:%Y-%m-%d}
+lastrun: ${now:%Y-%m-%dT%H:%M:%S%z}
+git: ${githash:}
+
+hydra:
+  run:
+    dir: "./outputs/${date}/theta-variance-calibration-relationship/name=${dgp.name}_data=${data_size}_queries=${num_queries}_repeats=${n_repeats}_rollout_length=${rollout_length}_posterior_samples=${num_posterior_samples}_seed=${seed}_query_source=${query_source}"
+  sweep:
+    dir: ${hydra.run.dir}
+    subdir: .

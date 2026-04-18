@@ -229,6 +229,68 @@ def compute_query_variance_summary(
     }
 
 
+def fit_loglog_slope(
+    depths: np.ndarray,
+    values: np.ndarray,
+    eps: float = 1e-12,
+) -> float:
+    depths = np.asarray(depths, dtype=np.float64)
+    values = np.asarray(values, dtype=np.float64)
+    if depths.ndim != 1 or values.ndim != 1:
+        raise ValueError("depths and values must be 1D arrays.")
+    if depths.shape[0] != values.shape[0]:
+        raise ValueError(
+            f"depths and values must have the same length, got {depths.shape[0]} and {values.shape[0]}."
+        )
+    if np.any(depths <= 0):
+        raise ValueError("fit_loglog_slope requires strictly positive depths.")
+
+    log_depths = np.log(depths)
+    log_values = np.log(np.clip(values, eps, None))
+    slope, _ = np.polyfit(log_depths, log_values, deg=1)
+    return float(slope)
+
+
+def compute_query_loglog_slopes(
+    variance_by_query: np.ndarray,
+    depths: np.ndarray,
+    windows: list[int] | tuple[int, ...],
+    eps: float = 1e-12,
+) -> dict[int, np.ndarray]:
+    variance_by_query = np.asarray(variance_by_query, dtype=np.float64)
+    depths = np.asarray(depths, dtype=np.int32)
+    if variance_by_query.ndim != 2:
+        raise ValueError(
+            "variance_by_query must have shape (num_queries, num_depths)."
+        )
+    if depths.ndim != 1 or depths.shape[0] != variance_by_query.shape[1]:
+        raise ValueError(
+            f"depths must have shape ({variance_by_query.shape[1]},), got {depths.shape}."
+        )
+
+    slopes_by_window: dict[int, np.ndarray] = {}
+    positive_depth_mask = depths > 0
+    positive_depths = depths[positive_depth_mask]
+    positive_variances = variance_by_query[:, positive_depth_mask]
+
+    for window in windows:
+        mask = positive_depths <= window
+        if mask.sum() < 2:
+            raise ValueError(
+                f"Need at least two depth points to fit slope_{window}, got {mask.sum()}."
+            )
+        slopes = np.empty(variance_by_query.shape[0], dtype=np.float64)
+        for query_idx in range(variance_by_query.shape[0]):
+            slopes[query_idx] = fit_loglog_slope(
+                positive_depths[mask],
+                positive_variances[query_idx, mask],
+                eps=eps,
+            )
+        slopes_by_window[int(window)] = slopes
+
+    return slopes_by_window
+
+
 def compute_multiclass_accuracy(
     probabilities: np.ndarray,
     class_labels: np.ndarray,
