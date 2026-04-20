@@ -98,6 +98,33 @@ def fixed_baseline_rollout_tensors(
     )
 
 
+def baseline_query_probabilities_tensor(
+    *,
+    baseline_pred_rule_factory: Callable[[], Any],
+    x_context: Tensor,
+    y_context: Tensor,
+    x_query: Tensor,
+    n_classes: int,
+) -> Tensor:
+    """Compute frozen baseline p(y | x_query, D_0) as a torch tensor."""
+
+    with torch.no_grad():
+        baseline_pred_rule = baseline_pred_rule_factory()
+        baseline_pred_rule.fit(
+            x_context.detach().cpu().numpy(),
+            y_context.detach().cpu().numpy(),
+        )
+        teacher_np = np.asarray(
+            baseline_pred_rule.predict_proba(x_query.detach().cpu().numpy()),
+            dtype=np.float64,
+        )
+    if teacher_np.shape[-1] != n_classes:
+        raise ValueError(
+            f"Baseline teacher returned {teacher_np.shape[-1]} classes, expected {n_classes}."
+        )
+    return torch.as_tensor(teacher_np, dtype=x_query.dtype, device=x_query.device)
+
+
 def validate_batched_indices(idx_context: Tensor, idx_query: Tensor) -> None:
     if idx_query.ndim != 2 or idx_context.ndim != 2:
         raise ValueError("idx_context and idx_query must have shape (batch, n).")
@@ -164,6 +191,7 @@ def classification_global_emd_loss(
 def classification_self_consistency_loss(
     *,
     model: nn.Module,
+    teacher: Tensor,
     x_rollout: Tensor,
     y_rollout: Tensor,
     x_query: Tensor,
@@ -173,13 +201,7 @@ def classification_self_consistency_loss(
 ) -> Tensor:
     """Differentiable SC loss on an already-fixed rollout trajectory."""
 
-    teacher = query_probabilities_from_fixed_context(
-        model,
-        x_context=x_rollout[:initial_context_size],
-        y_context=y_rollout[:initial_context_size],
-        x_query=x_query,
-        n_classes=n_classes,
-    ).detach()
+    teacher = teacher.detach()
 
     prefix_losses: list[Tensor] = []
     for horizon in range(1, x_rollout.shape[0] - initial_context_size + 1):
@@ -229,14 +251,23 @@ def classification_self_consistency_rollout_objective(
             rollout_length=rollout_length,
             rollout_seed=rollout_seed + batch_idx,
         )
+        initial_context_size = context_indices.shape[0]
+        teacher = baseline_query_probabilities_tensor(
+            baseline_pred_rule_factory=baseline_pred_rule_factory,
+            x_context=x_rollout[:initial_context_size],
+            y_context=y_rollout[:initial_context_size],
+            x_query=x_query,
+            n_classes=n_classes,
+        )
 
         batch_losses.append(
             classification_self_consistency_loss(
                 model=model,
+                teacher=teacher,
                 x_rollout=x_rollout,
                 y_rollout=y_rollout,
                 x_query=x_query,
-                initial_context_size=context_indices.shape[0],
+                initial_context_size=initial_context_size,
                 n_classes=n_classes,
                 eps=eps,
             )
