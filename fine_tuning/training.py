@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import logging
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -352,18 +353,42 @@ def train_full_ft(
         else:
             improved = False
 
-        state.history.append(
-            {
-                "epoch": state.epoch,
-                "step": state.step,
-                "mean_loss": sum(epoch_losses) / len(epoch_losses) if epoch_losses else None,
-                "eval": None if result is None else result.metrics | {"score": result.score},
-                "improved": improved,
-            }
+        mean_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else None
+        eval_metrics = None if result is None else result.metrics | {"score": result.score}
+        epoch_record = {
+            "epoch": state.epoch,
+            "step": state.step,
+            "mean_loss": mean_loss,
+            "eval": eval_metrics,
+            "improved": improved,
+        }
+        state.history.append(epoch_record)
+
+        eval_text = ""
+        if eval_metrics is not None:
+            eval_text = " | " + " | ".join(
+                f"{key}={value:.6g}" if isinstance(value, float) else f"{key}={value}"
+                for key, value in eval_metrics.items()
+            )
+        loss_text = "None" if mean_loss is None else f"{mean_loss:.6g}"
+        logging.info(
+            "Epoch %s | step=%s | mean_loss=%s%s | improved=%s",
+            state.epoch,
+            state.step,
+            loss_text,
+            eval_text,
+            improved,
         )
         state.epoch += 1
 
         if eval_fn is not None and early_stopping.should_stop():
+            logging.info(
+                "Early stopping at epoch %s, step %s. Best score %.6g at step %s.",
+                state.epoch,
+                state.step,
+                state.best_score,
+                state.best_step,
+            )
             break
 
     if output_dir is not None:
