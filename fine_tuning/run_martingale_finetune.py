@@ -21,6 +21,7 @@ from fine_tuning import (
     evaluate_global_emd,
     martingale_loss_fn,
     martingale_step_fn,
+    make_standard_prefix_cache_factory,
     sample_disjoint_val_test_queries,
 )
 from rollout import TabPFNClassifierPredRule
@@ -33,6 +34,7 @@ def _make_baseline_pred_rule_factory(cfg: DictConfig, categorical_x: list[bool])
             categorical_x,
             n_estimators=cfg.baseline.n_estimators,
             average_before_softmax=cfg.baseline.average_before_softmax,
+            fit_mode="fit_preprocessors",
         )
 
     return factory
@@ -49,6 +51,8 @@ def _make_eval_fn(
     rollout_seed: int,
     include_query_in_context: bool,
     distance_name: str,
+    standard_preprocessing_cache_factory,
+    average_before_softmax: bool,
 ):
     def eval_fn(*, model: torch.nn.Module, state, context) -> EvalResult:
         val_emd = evaluate_global_emd(
@@ -62,6 +66,8 @@ def _make_eval_fn(
             rollout_seed=rollout_seed,
             include_query_in_context=include_query_in_context,
             distance_name=distance_name,
+            standard_preprocessing_cache_factory=standard_preprocessing_cache_factory,
+            average_before_softmax=average_before_softmax,
         )
         return EvalResult(score=-val_emd, metrics={"val_global_emd": val_emd})
 
@@ -98,9 +104,19 @@ def run(cfg: DictConfig) -> None:
             "Categorical OpenML features are not wired into this fine-tuning runner yet."
         )
     baseline_pred_rule_factory = _make_baseline_pred_rule_factory(cfg, dgp.categorical_x)
+    categorical_features_indices = [
+        idx for idx, is_categorical in enumerate(dgp.categorical_x) if is_categorical
+    ]
 
     device = torch.device(
         cfg.device if cfg.device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
+    )
+    standard_preprocessing_cache_factory = make_standard_prefix_cache_factory(
+        categorical_features_indices=categorical_features_indices,
+        n_estimators=cfg.baseline.n_estimators,
+        average_before_softmax=cfg.baseline.average_before_softmax,
+        model_path=cfg.checkpoint_path,
+        device="cpu",
     )
     class_labels = np.unique(np.concatenate([train_data["y"], val_test_data["y"]]))
     train_encoded = encode_classification_dataset(
@@ -175,6 +191,8 @@ def run(cfg: DictConfig) -> None:
         "n_classes": len(class_labels),
         "distance_name": cfg.metrics.emd.distance,
         "baseline_pred_rule_factory": baseline_pred_rule_factory,
+        "standard_preprocessing_cache_factory": standard_preprocessing_cache_factory,
+        "average_before_softmax": cfg.baseline.average_before_softmax,
         "rollout_length": cfg.rollout_length,
         "rollout_seed": cfg.rollout_seed,
         "include_query_in_context": cfg.include_query_in_context,
@@ -190,6 +208,8 @@ def run(cfg: DictConfig) -> None:
         rollout_seed=cfg.rollout_seed + 50_000,
         include_query_in_context=cfg.include_query_in_context,
         distance_name=cfg.metrics.emd.distance,
+        standard_preprocessing_cache_factory=standard_preprocessing_cache_factory,
+        average_before_softmax=cfg.baseline.average_before_softmax,
     )
 
     tuner = FullFineTuner(model, ft_config, device=device)
@@ -213,6 +233,8 @@ def run(cfg: DictConfig) -> None:
             rollout_seed=cfg.rollout_seed + 50_000,
             include_query_in_context=cfg.include_query_in_context,
             distance_name=cfg.metrics.emd.distance,
+            standard_preprocessing_cache_factory=standard_preprocessing_cache_factory,
+            average_before_softmax=cfg.baseline.average_before_softmax,
         )
         test_emd = evaluate_global_emd(
             model=model,
@@ -225,6 +247,8 @@ def run(cfg: DictConfig) -> None:
             rollout_seed=cfg.rollout_seed + 100_000,
             include_query_in_context=cfg.include_query_in_context,
             distance_name=cfg.metrics.emd.distance,
+            standard_preprocessing_cache_factory=standard_preprocessing_cache_factory,
+            average_before_softmax=cfg.baseline.average_before_softmax,
         )
 
     utils.write_to(

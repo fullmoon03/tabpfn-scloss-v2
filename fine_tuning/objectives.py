@@ -8,6 +8,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from fine_tuning.data import gather_rows, make_eval_indices
+from fine_tuning.preprocessing_cache import query_probabilities_from_cached_prefix
 
 
 def probability_distance(p: Tensor, q: Tensor, distance_name: str = "l1") -> Tensor:
@@ -70,6 +71,38 @@ def query_probabilities_from_fixed_context(
     x_num = torch.cat([x_context[None, :, :], x_query[None, :, :]], dim=1)
     logits = model(x_num=x_num, y_train=y_context[None, :])[..., :n_classes]
     return logits.softmax(dim=-1).squeeze(0)
+
+
+def query_probabilities_with_optional_preprocessing(
+    model: nn.Module,
+    *,
+    x_context: Tensor,
+    y_context: Tensor,
+    x_query: Tensor,
+    n_classes: int,
+    prefix_cache: Any | None = None,
+    average_before_softmax: bool = False,
+) -> Tensor:
+    if prefix_cache is None:
+        return query_probabilities_from_fixed_context(
+            model,
+            x_context=x_context,
+            y_context=y_context,
+            x_query=x_query,
+            n_classes=n_classes,
+        )
+
+    cached_prefix = prefix_cache.fit_prefix(
+        x_context.detach().cpu().numpy(),
+        y_context.detach().cpu().numpy(),
+    )
+    return query_probabilities_from_cached_prefix(
+        model,
+        cached_prefix=cached_prefix,
+        x_query=x_query.detach().cpu().numpy(),
+        n_classes=n_classes,
+        average_before_softmax=average_before_softmax,
+    )
 
 
 def fixed_baseline_rollout_tensors(
@@ -144,6 +177,8 @@ def classification_global_emd_loss(
     rollout_length: int,
     rollout_seed: int,
     distance_name: str = "l1",
+    standard_preprocessing_cache_factory: Callable[[], Any] | None = None,
+    average_before_softmax: bool = False,
 ) -> Tensor:
     """Global EMD over queries using frozen baseline rollout prefixes."""
 
@@ -151,6 +186,11 @@ def classification_global_emd_loss(
 
     batch_losses: list[Tensor] = []
     for batch_idx in range(idx_query.shape[0]):
+        prefix_cache = (
+            standard_preprocessing_cache_factory()
+            if standard_preprocessing_cache_factory is not None
+            else None
+        )
         context_indices = idx_context[batch_idx]
         x_query = gather_rows(x_all, idx_query[batch_idx])
         x_rollout, y_rollout = fixed_baseline_rollout_tensors(
@@ -163,22 +203,26 @@ def classification_global_emd_loss(
         )
 
         initial_context_size = context_indices.shape[0]
-        p0 = query_probabilities_from_fixed_context(
+        p0 = query_probabilities_with_optional_preprocessing(
             model,
             x_context=x_rollout[:initial_context_size],
             y_context=y_rollout[:initial_context_size],
             x_query=x_query,
             n_classes=n_classes,
+            prefix_cache=prefix_cache,
+            average_before_softmax=average_before_softmax,
         )
 
         distances: list[Tensor] = []
         for horizon in range(1, rollout_length + 1):
-            p_h = query_probabilities_from_fixed_context(
+            p_h = query_probabilities_with_optional_preprocessing(
                 model,
                 x_context=x_rollout[: initial_context_size + horizon],
                 y_context=y_rollout[: initial_context_size + horizon],
                 x_query=x_query,
                 n_classes=n_classes,
+                prefix_cache=prefix_cache,
+                average_before_softmax=average_before_softmax,
             )
             distances.append(probability_distance(p_h, p0, distance_name=distance_name))
 
@@ -198,6 +242,8 @@ def classification_self_consistency_loss(
     initial_context_size: int,
     n_classes: int,
     eps: float = 1e-12,
+    prefix_cache: Any | None = None,
+    average_before_softmax: bool = False,
 ) -> Tensor:
     """Differentiable SC loss on an already-fixed rollout trajectory."""
 
@@ -205,12 +251,14 @@ def classification_self_consistency_loss(
 
     prefix_losses: list[Tensor] = []
     for horizon in range(1, x_rollout.shape[0] - initial_context_size + 1):
-        student = query_probabilities_from_fixed_context(
+        student = query_probabilities_with_optional_preprocessing(
             model,
             x_context=x_rollout[: initial_context_size + horizon],
             y_context=y_rollout[: initial_context_size + horizon],
             x_query=x_query,
             n_classes=n_classes,
+            prefix_cache=prefix_cache,
+            average_before_softmax=average_before_softmax,
         )
         prefix_losses.append(soft_cross_entropy(teacher, student, eps=eps))
 
@@ -230,6 +278,8 @@ def classification_self_consistency_rollout_objective(
     rollout_length: int,
     rollout_seed: int,
     eps: float = 1e-12,
+    standard_preprocessing_cache_factory: Callable[[], Any] | None = None,
+    average_before_softmax: bool = False,
 ) -> Tensor:
     """SC loss over frozen baseline rollout prefixes.
 
@@ -241,6 +291,11 @@ def classification_self_consistency_rollout_objective(
 
     batch_losses: list[Tensor] = []
     for batch_idx in range(idx_query.shape[0]):
+        prefix_cache = (
+            standard_preprocessing_cache_factory()
+            if standard_preprocessing_cache_factory is not None
+            else None
+        )
         context_indices = idx_context[batch_idx]
         x_query = gather_rows(x_all, idx_query[batch_idx])
         x_rollout, y_rollout = fixed_baseline_rollout_tensors(
@@ -270,6 +325,8 @@ def classification_self_consistency_rollout_objective(
                 initial_context_size=initial_context_size,
                 n_classes=n_classes,
                 eps=eps,
+                prefix_cache=prefix_cache,
+                average_before_softmax=average_before_softmax,
             )
         )
 
@@ -290,6 +347,8 @@ def martingale_loss_fn(
     rollout_seed: int = 0,
     distance_name: str = "l1",
     sc_eps: float = 1e-12,
+    standard_preprocessing_cache_factory: Callable[[], Any] | None = None,
+    average_before_softmax: bool = False,
 ) -> Tensor:
     if task_type == "classification":
         if n_classes is None:
@@ -309,6 +368,8 @@ def martingale_loss_fn(
             rollout_length=rollout_length,
             rollout_seed=rollout_seed,
             eps=sc_eps,
+            standard_preprocessing_cache_factory=standard_preprocessing_cache_factory,
+            average_before_softmax=average_before_softmax,
         )
     if task_type == "regression":
         raise NotImplementedError("Regression martingale loss is not implemented yet.")
@@ -337,6 +398,10 @@ def martingale_step_fn(
         rollout_seed=context.get("rollout_seed", 0) + state.step * 1009,
         distance_name=context.get("distance_name", "l1"),
         sc_eps=context.get("sc_eps", 1e-12),
+        standard_preprocessing_cache_factory=context.get(
+            "standard_preprocessing_cache_factory"
+        ),
+        average_before_softmax=context.get("average_before_softmax", False),
     )
 
 
@@ -352,6 +417,8 @@ def evaluate_global_emd(
     rollout_seed: int = 0,
     include_query_in_context: bool = True,
     distance_name: str = "l1",
+    standard_preprocessing_cache_factory: Callable[[], Any] | None = None,
+    average_before_softmax: bool = False,
 ) -> float:
     device = x_all.device
     idx_context, idx_query = make_eval_indices(
@@ -371,5 +438,7 @@ def evaluate_global_emd(
         rollout_length=rollout_length,
         rollout_seed=rollout_seed,
         distance_name=distance_name,
+        standard_preprocessing_cache_factory=standard_preprocessing_cache_factory,
+        average_before_softmax=average_before_softmax,
     )
     return float(loss.detach().cpu())
