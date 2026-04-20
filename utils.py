@@ -3,6 +3,9 @@ import os
 import pickle
 import re
 import subprocess
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import chex
 import jax
@@ -42,6 +45,22 @@ def githash():
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
         return "nogit"
+
+
+def kst_hhmm():
+    return datetime.now(ZoneInfo("Asia/Seoul")).strftime("%H%M")
+
+
+def tuned_path_suffix(path):
+    if path is None:
+        return "nosuffix"
+
+    candidate = Path(str(path))
+    for path_part in (candidate, *candidate.parents):
+        match = re.search(r"_(\d{4})$", path_part.name)
+        if match:
+            return match.group(1)
+    return "nosuffix"
 
 
 def write_to_local(path, obj, verbose=False):

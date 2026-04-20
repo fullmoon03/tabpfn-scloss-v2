@@ -39,7 +39,7 @@ amp: false
 randperm: false
 save_best: true
 show_progress: true
-progress_log_every_epochs: 10
+progress_log_every_epochs: 1
 
 loss:
   name: self_consistency
@@ -55,7 +55,7 @@ git: ${githash:}
 
 hydra:
   run:
-    dir: "./outputs/${date}/martingale-finetune/name=${dgp.name}_train=${data_size}_valtest=${val_test_size}_queries=${query_size}_rollout_length=${rollout_length}_epochs=${n_epochs}_epoch_size=${epoch_size}_seed=${seed}"
+    dir: "./outputs/${date}/martingale-finetune/name=${dgp.name}_train=${data_size}_valtest=${val_test_size}_queries=${query_size}_rollout_length=${rollout_length}_epochs=${n_epochs}_epoch_size=${epoch_size}_seed=${seed}_${kst_hhmm:}"
   sweep:
     dir: ${hydra.run.dir}
     subdir: .

@@ -26,7 +26,7 @@ git: ${githash:}
 
 hydra:
   run:
-    dir: "./outputs/${date}/baseline-tuned-conditional-variance/name=${dgp.name}_data=${data_size}_queries=${num_queries}_rollout_length=${rollout_length}_posterior_samples=${num_posterior_samples}_seed=${seed}_query_source=${query_source}"
+    dir: "./outputs/${date}/baseline-tuned-conditional-variance/name=${dgp.name}_data=${data_size}_queries=${num_queries}_rollout_length=${rollout_length}_posterior_samples=${num_posterior_samples}_seed=${seed}_query_source=${query_source}_${tuned_path_suffix:${tuned_checkpoint_path}}"
   sweep:
     dir: ${hydra.run.dir}
     subdir: .

@@ -17,4 +17,5 @@ def main(cfg):
 
 if __name__ == "__main__":
     OmegaConf.register_new_resolver("githash", utils.githash)
+    OmegaConf.register_new_resolver("tuned_path_suffix", utils.tuned_path_suffix)
     main()

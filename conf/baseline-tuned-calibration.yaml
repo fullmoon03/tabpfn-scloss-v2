@@ -21,7 +21,7 @@ git: ${githash:}
 
 hydra:
   run:
-    dir: "./outputs/${date}/baseline-tuned-calibration/name=${dgp.name}_data=${data_size}_repeats=${n_repeats}_seed=${seed}"
+    dir: "./outputs/${date}/baseline-tuned-calibration/name=${dgp.name}_data=${data_size}_repeats=${n_repeats}_seed=${seed}_${tuned_path_suffix:${tuned_checkpoint_path}}"
   sweep:
     dir: ${hydra.run.dir}
     subdir: .

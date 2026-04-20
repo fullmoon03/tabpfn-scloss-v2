@@ -253,4 +253,5 @@ def main(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     OmegaConf.register_new_resolver("githash", utils.githash)
+    OmegaConf.register_new_resolver("kst_hhmm", utils.kst_hhmm)
     main()
