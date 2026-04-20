@@ -169,13 +169,30 @@ def sample_reference_trajectory(
     dgp: object,
     key: jax.Array,
 ) -> tuple[np.ndarray, np.ndarray]:
-    pred_rule = make_classifier_pred_rule(cfg, dgp)
+    return sample_reference_trajectory_with_factory(
+        pred_rule_factory=lambda: make_classifier_pred_rule(cfg, dgp),
+        x_train=dgp.train_data["x"],
+        y_train=dgp.train_data["y"],
+        rollout_length=cfg.rollout_length,
+        key=key,
+    )
+
+
+def sample_reference_trajectory_with_factory(
+    *,
+    pred_rule_factory,
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    rollout_length: int,
+    key: jax.Array,
+) -> tuple[np.ndarray, np.ndarray]:
+    pred_rule = pred_rule_factory()
     return forward_sampling(
         key,
         pred_rule.sample,
-        dgp.train_data["x"],
-        dgp.train_data["y"],
-        cfg.rollout_length,
+        x_train,
+        y_train,
+        rollout_length,
         show_progress=False,
     )
 
@@ -188,7 +205,24 @@ def sample_one_step_conditional_belief(
     y_context: np.ndarray,
     x_query: np.ndarray,
 ) -> np.ndarray:
-    pred_rule = make_classifier_pred_rule(cfg, dgp)
+    return sample_one_step_conditional_belief_with_factory(
+        pred_rule_factory=lambda: make_classifier_pred_rule(cfg, dgp),
+        key=key,
+        x_context=x_context,
+        y_context=y_context,
+        x_query=x_query,
+    )
+
+
+def sample_one_step_conditional_belief_with_factory(
+    *,
+    pred_rule_factory,
+    key: jax.Array,
+    x_context: np.ndarray,
+    y_context: np.ndarray,
+    x_query: np.ndarray,
+) -> np.ndarray:
+    pred_rule = pred_rule_factory()
     rkey, x_key = jax.random.split(key)
     x_new = np.asarray(get_x_new(x_key, x_context))
     rkey, y_key = jax.random.split(rkey)
@@ -197,7 +231,7 @@ def sample_one_step_conditional_belief(
     x_next = np.concatenate([x_context, x_new], axis=0)
     y_next = np.concatenate([y_context, np.atleast_1d(y_new)], axis=0)
 
-    pred_rule = make_classifier_pred_rule(cfg, dgp)
+    pred_rule = pred_rule_factory()
     pred_rule.fit(x_next, y_next)
     return pred_rule.predict_proba(x_query)
 
@@ -210,31 +244,58 @@ def collect_one_step_conditional_beliefs(
     y_reference: np.ndarray,
     x_query: np.ndarray,
 ) -> np.ndarray:
-    n_train = dgp.train_data["x"].shape[0]
-    num_depths = cfg.rollout_length + 1
+    conditional_beliefs, _ = collect_one_step_conditional_beliefs_with_factory(
+        pred_rule_factory=lambda: make_classifier_pred_rule(cfg, dgp),
+        x_train=dgp.train_data["x"],
+        y_train=dgp.train_data["y"],
+        base_key=base_key,
+        x_reference=x_reference,
+        y_reference=y_reference,
+        x_query=x_query,
+        num_posterior_samples=cfg.num_posterior_samples,
+        rollout_length=cfg.rollout_length,
+        progress_desc="Reference depths",
+    )
+    return conditional_beliefs
 
-    pred_rule = make_classifier_pred_rule(cfg, dgp)
-    pred_rule.fit(dgp.train_data["x"], dgp.train_data["y"])
-    num_classes = np.asarray(pred_rule.classes_).shape[0]
+
+def collect_one_step_conditional_beliefs_with_factory(
+    *,
+    pred_rule_factory,
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    base_key: jax.Array,
+    x_reference: np.ndarray,
+    y_reference: np.ndarray,
+    x_query: np.ndarray,
+    num_posterior_samples: int,
+    rollout_length: int,
+    progress_desc: str = "Reference depths",
+) -> tuple[np.ndarray, np.ndarray]:
+    n_train = x_train.shape[0]
+    num_depths = rollout_length + 1
+
+    pred_rule = pred_rule_factory()
+    pred_rule.fit(x_train, y_train)
+    class_labels = np.asarray(pred_rule.classes_)
 
     conditional_beliefs = np.empty(
-        (num_depths, cfg.num_posterior_samples, cfg.num_queries, num_classes),
+        (num_depths, num_posterior_samples, x_query.shape[0], class_labels.shape[0]),
         dtype=np.float64,
     )
 
-    for depth in tqdm(range(num_depths), desc="Reference depths"):
+    for depth in tqdm(range(num_depths), desc=progress_desc):
         x_context = x_reference[: n_train + depth]
         y_context = y_reference[: n_train + depth]
-        for sample_idx in range(cfg.num_posterior_samples):
+        for sample_idx in range(num_posterior_samples):
             one_step_key = jax.random.fold_in(base_key, depth)
             one_step_key = jax.random.fold_in(one_step_key, sample_idx)
-            conditional_beliefs[depth, sample_idx] = sample_one_step_conditional_belief(
-                cfg,
-                dgp,
-                one_step_key,
-                x_context,
-                y_context,
-                x_query,
+            conditional_beliefs[depth, sample_idx] = sample_one_step_conditional_belief_with_factory(
+                pred_rule_factory=pred_rule_factory,
+                key=one_step_key,
+                x_context=x_context,
+                y_context=y_context,
+                x_query=x_query,
             )
 
-    return conditional_beliefs
+    return conditional_beliefs, class_labels
