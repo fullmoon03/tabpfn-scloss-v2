@@ -12,6 +12,7 @@ numpy==2.4.4
 equinox==0.13.6
 chex==0.1.91
 tqdm==4.67.3
+typing-extensions>=4.0
 
 # for configuration management
 hydra-core==1.3.2

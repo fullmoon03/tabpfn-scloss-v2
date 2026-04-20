@@ -1,0 +1,59 @@
+defaults:
+  - dgp: openml
+  - _self_
+
+task_type: classification
+query_source: context
+include_query_in_context: true
+
+# OpenML Vehicle has 846 rows. For the initial implementation we use
+# train=746 and the remaining 100 as both validation/test context pool.
+data_size: 746
+val_test_size: 100
+rollout_length: 30
+
+batch_size: 1
+context_size: 100
+query_size: 24
+n_epochs: 100
+epoch_size: 10
+patience: 16
+seed: 999
+query_seed: 1999
+rollout_seed: 2999
+
+checkpoint_path: tabpfn-v2-classifier.ckpt
+device: null
+
+baseline:
+  n_estimators: 4
+  average_before_softmax: false
+
+optimizer:
+  type: AdamW
+  lr: 3e-5
+  weight_decay: 0.0
+gradient_clipping_norm: null
+n_lr_warmup_epochs: null
+amp: false
+randperm: false
+save_best: true
+
+loss:
+  name: self_consistency
+  sc_eps: 1.0e-12
+
+metrics:
+  emd:
+    distance: l1
+
+date: ${now:%Y-%m-%d}
+lastrun: ${now:%Y-%m-%dT%H:%M:%S%z}
+git: ${githash:}
+
+hydra:
+  run:
+    dir: "./outputs/${date}/martingale-finetune/name=${dgp.name}_train=${data_size}_valtest=${val_test_size}_queries=${query_size}_rollout_length=${rollout_length}_epochs=${n_epochs}_epoch_size=${epoch_size}_seed=${seed}"
+  sweep:
+    dir: ${hydra.run.dir}
+    subdir: .
