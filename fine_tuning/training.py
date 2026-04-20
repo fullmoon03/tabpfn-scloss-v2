@@ -13,33 +13,6 @@ import torch.nn as nn
 from tqdm import tqdm
 
 
-def loss_fn(*args: Any, **kwargs: Any) -> torch.Tensor:
-    """Placeholder for user-defined loss logic.
-
-    Expected output: a scalar torch.Tensor suitable for `loss.backward()`.
-    """
-
-    raise NotImplementedError("Provide your own loss_fn callable.")
-
-
-def step_fn(
-    *,
-    model: nn.Module,
-    loss_fn: Callable[..., torch.Tensor],
-    idx_train: torch.Tensor,
-    idx: torch.Tensor,
-    state: "TrainState",
-    context: dict[str, Any],
-) -> torch.Tensor:
-    """Placeholder for one train step's forward/loss construction.
-
-    Plug in custom logic here or pass a callable to `train_full_ft`.
-    Expected output: a scalar torch.Tensor.
-    """
-
-    raise NotImplementedError("Provide your own step_fn callable.")
-
-
 @dataclass
 class FullFTConfig:
     """Full fine-tuning loop config.
@@ -109,6 +82,79 @@ class CandidateQueue:
             [self._n_candidates, len(self._queue) - self._n_candidates]
         )
         return out
+
+
+def validate_sampling_config(config: FullFTConfig) -> None:
+    if config.context_size is not None:
+        if not 0 < config.context_size <= config.train_size:
+            raise ValueError("context_size must be in (0, train_size].")
+        if config.query_size > config.context_size:
+            raise ValueError("query_size must be <= context_size.")
+    elif config.query_size >= config.train_size:
+        raise ValueError("query_size must be < train_size when context_size is unset.")
+
+
+def sample_context_and_query_indices(
+    *,
+    config: FullFTConfig,
+    candidate_queue: CandidateQueue | None,
+    context_candidate_queue: CandidateQueue | None,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sample context indices and query indices for one optimization step."""
+
+    if config.context_size is not None:
+        if config.context_size == config.train_size:
+            idx_context = torch.arange(config.train_size, device=device).expand(
+                config.batch_size,
+                config.train_size,
+            )
+        elif config.randperm:
+            idx_context = torch.stack(
+                [
+                    torch.randperm(config.train_size, device=device)[
+                        : config.context_size
+                    ]
+                    for _ in range(config.batch_size)
+                ],
+                dim=0,
+            )
+        else:
+            assert context_candidate_queue is not None
+            idx_context = next(context_candidate_queue).view(
+                config.batch_size,
+                config.context_size,
+            )
+
+        query_positions = torch.stack(
+            [
+                torch.randperm(config.context_size, device=device)[
+                    : config.query_size
+                ]
+                for _ in range(config.batch_size)
+            ],
+            dim=0,
+        )
+        idx_query = torch.gather(idx_context, dim=1, index=query_positions)
+        return idx_context, idx_query
+
+    if config.randperm:
+        idx_query = torch.randperm(config.train_size, device=device)[
+            : config.batch_size * config.query_size
+        ]
+    else:
+        assert candidate_queue is not None
+        idx_query = next(candidate_queue)
+    idx_query = idx_query.view(config.batch_size, -1)
+
+    mask = idx_query.new_ones((config.batch_size, config.train_size), dtype=torch.bool)
+    mask[torch.arange(config.batch_size, device=device).unsqueeze(-1), idx_query] = False
+    idx_context = (
+        torch.arange(config.train_size, device=device)
+        .expand(config.batch_size, config.train_size)[mask]
+        .view(config.batch_size, -1)
+    )
+    return idx_context, idx_query
 
 
 class EarlyStopping:
@@ -195,8 +241,8 @@ def train_full_ft(
     *,
     model: nn.Module,
     config: FullFTConfig,
-    step_fn: Callable[..., torch.Tensor] = step_fn,
-    loss_fn: Callable[..., torch.Tensor] = loss_fn,
+    step_fn: Callable[..., torch.Tensor],
+    loss_fn: Callable[..., torch.Tensor],
     eval_fn: Callable[..., EvalResult] | None = None,
     context: dict[str, Any] | None = None,
     device: str | torch.device | None = None,
@@ -232,14 +278,7 @@ def train_full_ft(
     output_dir = Path(config.output_dir) if config.output_dir is not None else None
     state = TrainState()
     early_stopping = EarlyStopping(config.patience)
-    if config.context_size is not None:
-        if not 0 < config.context_size <= config.train_size:
-            raise ValueError("context_size must be in (0, train_size].")
-        if config.query_size > config.context_size:
-            raise ValueError("query_size must be <= context_size.")
-    else:
-        if config.query_size >= config.train_size:
-            raise ValueError("query_size must be < train_size when context_size is unset.")
+    validate_sampling_config(config)
 
     candidate_queue = (
         CandidateQueue(
@@ -321,54 +360,12 @@ def train_full_ft(
             if config.n_steps != -1 and state.step >= config.n_steps:
                 break
 
-            if config.context_size is not None:
-                if config.context_size == config.train_size:
-                    idx_train = torch.arange(config.train_size, device=device).expand(
-                        config.batch_size, config.train_size
-                    )
-                elif config.randperm:
-                    idx_train = torch.stack(
-                        [
-                            torch.randperm(config.train_size, device=device)[
-                                : config.context_size
-                            ]
-                            for _ in range(config.batch_size)
-                        ],
-                        dim=0,
-                    )
-                else:
-                    assert context_candidate_queue is not None
-                    idx_train = next(context_candidate_queue).view(
-                        config.batch_size, config.context_size
-                    )
-
-                query_positions = torch.stack(
-                    [
-                        torch.randperm(config.context_size, device=device)[
-                            : config.query_size
-                        ]
-                        for _ in range(config.batch_size)
-                    ],
-                    dim=0,
-                )
-                idx = torch.gather(idx_train, dim=1, index=query_positions)
-            else:
-                if config.randperm:
-                    idx = torch.randperm(config.train_size, device=device)[
-                        : config.batch_size * config.query_size
-                    ]
-                else:
-                    assert candidate_queue is not None
-                    idx = next(candidate_queue)
-                idx = idx.view(config.batch_size, -1)
-
-                mask = idx.new_ones((config.batch_size, config.train_size), dtype=torch.bool)
-                mask[torch.arange(config.batch_size, device=device).unsqueeze(-1), idx] = False
-                idx_train = (
-                    torch.arange(config.train_size, device=device)
-                    .expand(config.batch_size, config.train_size)[mask]
-                    .view(config.batch_size, -1)
-                )
+            idx_train, idx = sample_context_and_query_indices(
+                config=config,
+                candidate_queue=candidate_queue,
+                context_candidate_queue=context_candidate_queue,
+                device=device,
+            )
 
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(
@@ -492,36 +489,3 @@ def train_full_ft(
         )
 
     return state
-
-
-class FullFineTuner:
-    """Small OO wrapper around `train_full_ft`."""
-
-    def __init__(
-        self,
-        model: nn.Module,
-        config: FullFTConfig,
-        *,
-        device: str | torch.device | None = None,
-    ) -> None:
-        self.model = model
-        self.config = config
-        self.device = device
-
-    def fit(
-        self,
-        *,
-        step_fn: Callable[..., torch.Tensor],
-        loss_fn: Callable[..., torch.Tensor],
-        eval_fn: Callable[..., EvalResult] | None = None,
-        context: dict[str, Any] | None = None,
-    ) -> TrainState:
-        return train_full_ft(
-            model=self.model,
-            config=self.config,
-            step_fn=step_fn,
-            loss_fn=loss_fn,
-            eval_fn=eval_fn,
-            context=context,
-            device=self.device,
-        )

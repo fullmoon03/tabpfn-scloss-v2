@@ -12,6 +12,29 @@ import jax
 import jax.numpy as jnp
 
 
+def suppress_noisy_third_party_logs():
+    """Hide known non-actionable third-party warnings from experiment logs."""
+
+    class _NoisyThirdPartyFilter(logging.Filter):
+        def filter(self, record):
+            if record.name.startswith(("posthog", "analytics", "analytics-python")):
+                return False
+            if "analytics-python queue is full" in record.getMessage():
+                return False
+            return True
+
+    for logger_name in ("posthog", "analytics", "analytics-python"):
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(logging.CRITICAL + 1)
+        logger.disabled = True
+        logger.propagate = False
+
+    root_logger = logging.getLogger()
+    root_logger.addFilter(_NoisyThirdPartyFilter())
+    for handler in root_logger.handlers:
+        handler.addFilter(_NoisyThirdPartyFilter())
+
+
 def get_n_data(data):
     # return the number of samples in 'data' which is a dictionary of arrays
     # with the same leading dimension

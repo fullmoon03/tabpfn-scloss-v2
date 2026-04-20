@@ -11,18 +11,21 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from dgp import OPENML_CLASSIFICATION, load_dgp
-from fine_tuning import (
-    EvalResult,
-    FullFTConfig,
-    FullFineTuner,
-    TabPFN2,
-    TabPFN2Config,
+from fine_tuning.data import (
     encode_classification_dataset,
+    sample_disjoint_val_test_queries,
+)
+from fine_tuning.objectives import (
     evaluate_global_emd,
     martingale_loss_fn,
     martingale_step_fn,
-    make_standard_prefix_cache_factory,
-    sample_disjoint_val_test_queries,
+)
+from fine_tuning.tabpfn_model import TrainableTabPFNClassifier
+from fine_tuning.preprocess import make_preprocessor_factory
+from fine_tuning.training import (
+    EvalResult,
+    FullFTConfig,
+    train_full_ft,
 )
 from rollout import TabPFNClassifierPredRule
 import utils
@@ -51,8 +54,7 @@ def _make_eval_fn(
     rollout_seed: int,
     include_query_in_context: bool,
     distance_name: str,
-    standard_preprocessing_cache_factory,
-    average_before_softmax: bool,
+    preprocessor_factory,
 ):
     def eval_fn(*, model: torch.nn.Module, state, context) -> EvalResult:
         val_emd = evaluate_global_emd(
@@ -66,8 +68,7 @@ def _make_eval_fn(
             rollout_seed=rollout_seed,
             include_query_in_context=include_query_in_context,
             distance_name=distance_name,
-            standard_preprocessing_cache_factory=standard_preprocessing_cache_factory,
-            average_before_softmax=average_before_softmax,
+            preprocessor_factory=preprocessor_factory,
         )
         return EvalResult(score=-val_emd, metrics={"val_global_emd": val_emd})
 
@@ -111,7 +112,7 @@ def run(cfg: DictConfig) -> None:
     device = torch.device(
         cfg.device if cfg.device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
     )
-    standard_preprocessing_cache_factory = make_standard_prefix_cache_factory(
+    preprocessor_factory = make_preprocessor_factory(
         categorical_features_indices=categorical_features_indices,
         n_estimators=cfg.baseline.n_estimators,
         average_before_softmax=cfg.baseline.average_before_softmax,
@@ -155,13 +156,12 @@ def run(cfg: DictConfig) -> None:
         verbose=True,
     )
 
-    model = TabPFN2(
-        TabPFN2Config(
-            checkpoint_path=Path(cfg.checkpoint_path),
-            is_regression=False,
-            n_num_features=train_encoded.x_num.shape[1],
-            n_classes=len(class_labels),
-        )
+    model = TrainableTabPFNClassifier(
+        checkpoint_path=Path(cfg.checkpoint_path),
+        n_estimators=cfg.baseline.n_estimators,
+        average_before_softmax=cfg.baseline.average_before_softmax,
+        categorical_features_indices=categorical_features_indices,
+        device=device,
     )
 
     ft_config = FullFTConfig(
@@ -186,13 +186,12 @@ def run(cfg: DictConfig) -> None:
 
     context = {
         "task_type": cfg.task_type,
+        "loss_name": cfg.loss.name,
         "x_num_train": train_encoded.x_num,
         "y_train": train_encoded.y,
         "n_classes": len(class_labels),
-        "distance_name": cfg.metrics.emd.distance,
         "baseline_pred_rule_factory": baseline_pred_rule_factory,
-        "standard_preprocessing_cache_factory": standard_preprocessing_cache_factory,
-        "average_before_softmax": cfg.baseline.average_before_softmax,
+        "preprocessor_factory": preprocessor_factory,
         "rollout_length": cfg.rollout_length,
         "rollout_seed": cfg.rollout_seed,
         "include_query_in_context": cfg.include_query_in_context,
@@ -208,16 +207,17 @@ def run(cfg: DictConfig) -> None:
         rollout_seed=cfg.rollout_seed + 50_000,
         include_query_in_context=cfg.include_query_in_context,
         distance_name=cfg.metrics.emd.distance,
-        standard_preprocessing_cache_factory=standard_preprocessing_cache_factory,
-        average_before_softmax=cfg.baseline.average_before_softmax,
+        preprocessor_factory=preprocessor_factory,
     )
 
-    tuner = FullFineTuner(model, ft_config, device=device)
-    state = tuner.fit(
+    state = train_full_ft(
+        model=model,
+        config=ft_config,
         step_fn=martingale_step_fn,
         loss_fn=martingale_loss_fn,
         eval_fn=eval_fn,
         context=context,
+        device=device,
     )
 
     model.eval()
@@ -233,8 +233,7 @@ def run(cfg: DictConfig) -> None:
             rollout_seed=cfg.rollout_seed + 50_000,
             include_query_in_context=cfg.include_query_in_context,
             distance_name=cfg.metrics.emd.distance,
-            standard_preprocessing_cache_factory=standard_preprocessing_cache_factory,
-            average_before_softmax=cfg.baseline.average_before_softmax,
+            preprocessor_factory=preprocessor_factory,
         )
         test_emd = evaluate_global_emd(
             model=model,
@@ -247,8 +246,7 @@ def run(cfg: DictConfig) -> None:
             rollout_seed=cfg.rollout_seed + 100_000,
             include_query_in_context=cfg.include_query_in_context,
             distance_name=cfg.metrics.emd.distance,
-            standard_preprocessing_cache_factory=standard_preprocessing_cache_factory,
-            average_before_softmax=cfg.baseline.average_before_softmax,
+            preprocessor_factory=preprocessor_factory,
         )
 
     utils.write_to(
@@ -270,12 +268,14 @@ def run(cfg: DictConfig) -> None:
 @hydra.main(version_base=None, config_path="../conf", config_name="martingale-finetune")
 def main(cfg: DictConfig) -> None:
     OmegaConf.resolve(cfg)
+    utils.suppress_noisy_third_party_logs()
     logging.info(f"Hydra version: {hydra.__version__}")
     logging.info(OmegaConf.to_yaml(cfg))
     run(cfg)
 
 
 if __name__ == "__main__":
+    utils.suppress_noisy_third_party_logs()
     OmegaConf.register_new_resolver("githash", utils.githash)
     OmegaConf.register_new_resolver("kst_hhmm", utils.kst_hhmm)
     main()

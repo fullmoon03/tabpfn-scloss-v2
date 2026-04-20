@@ -14,11 +14,13 @@ import utils
 )
 def main(cfg: DictConfig) -> None:
     OmegaConf.resolve(cfg)
+    utils.suppress_noisy_third_party_logs()
     logging.info(f"Hydra version: {hydra.__version__}")
     logging.info(OmegaConf.to_yaml(cfg))
     run(cfg)
 
 
 if __name__ == "__main__":
+    utils.suppress_noisy_third_party_logs()
     OmegaConf.register_new_resolver("githash", utils.githash)
     main()

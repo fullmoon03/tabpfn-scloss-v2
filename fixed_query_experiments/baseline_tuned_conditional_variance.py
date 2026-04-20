@@ -36,19 +36,19 @@ def _class_labels(dgp: object) -> np.ndarray:
     return np.unique(np.concatenate(labels))
 
 
-def _make_tuned_factory(cfg: DictConfig, dgp: object, class_labels: np.ndarray):
-    if any(getattr(dgp, "categorical_x", [])):
-        raise NotImplementedError(
-            "Fine-tuned TabPFN2 conditional variance comparison currently treats all "
-            "features as numeric; categorical features are not wired in."
-        )
+def _categorical_feature_indices(dgp: object) -> list[int]:
+    return [idx for idx, is_cat in enumerate(getattr(dgp, "categorical_x", [])) if is_cat]
 
+
+def _make_tuned_factory(cfg: DictConfig, dgp: object, class_labels: np.ndarray):
     def factory() -> FineTunedTabPFNClassifierPredRule:
         return FineTunedTabPFNClassifierPredRule(
             base_checkpoint_path=cfg.base_checkpoint_path,
             tuned_checkpoint_path=cfg.tuned_checkpoint_path,
-            n_num_features=dgp.train_data["x"].shape[1],
             class_labels=class_labels,
+            categorical_features_indices=_categorical_feature_indices(dgp),
+            n_estimators=cfg.n_estimators,
+            average_before_softmax=cfg.average_before_softmax,
             device=cfg.device,
             torch_seed=cfg.seed * 131,
         )

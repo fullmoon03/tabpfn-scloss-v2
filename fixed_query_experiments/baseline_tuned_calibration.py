@@ -17,7 +17,7 @@ from tqdm import trange
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from dgp import OPENML_BINARY_CLASSIFICATION, OPENML_CLASSIFICATION, load_dgp
+from dgp import load_dgp
 from fixed_query_experiments import metrics
 from fixed_query_experiments.rollout import make_classifier_pred_rule
 from fixed_query_experiments.tuned_pred_rule import FineTunedTabPFNClassifierPredRule
@@ -54,18 +54,18 @@ def _align_probabilities(
     return aligned
 
 
+def _categorical_feature_indices(dgp: object) -> list[int]:
+    return [idx for idx, is_cat in enumerate(getattr(dgp, "categorical_x", [])) if is_cat]
+
+
 def _make_tuned_pred_rule(cfg: DictConfig, dgp: object, class_labels: np.ndarray):
-    if cfg.dgp.name in OPENML_CLASSIFICATION + OPENML_BINARY_CLASSIFICATION:
-        if any(getattr(dgp, "categorical_x", [])):
-            raise NotImplementedError(
-                "Fine-tuned TabPFN2 calibration comparison currently treats all "
-                "features as numeric; categorical OpenML features are not wired in."
-            )
     return FineTunedTabPFNClassifierPredRule(
         base_checkpoint_path=cfg.base_checkpoint_path,
         tuned_checkpoint_path=cfg.tuned_checkpoint_path,
-        n_num_features=dgp.train_data["x"].shape[1],
         class_labels=class_labels,
+        categorical_features_indices=_categorical_feature_indices(dgp),
+        n_estimators=cfg.n_estimators,
+        average_before_softmax=cfg.average_before_softmax,
         device=cfg.device,
         torch_seed=cfg.seed * 131,
     )

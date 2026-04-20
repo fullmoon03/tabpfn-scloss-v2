@@ -4,11 +4,9 @@ from typing import Any, Callable
 
 import numpy as np
 import torch
-import torch.nn as nn
 from torch import Tensor
 
 from fine_tuning.data import gather_rows, make_eval_indices
-from fine_tuning.preprocessing_cache import query_probabilities_from_cached_prefix
 
 
 def probability_distance(p: Tensor, q: Tensor, distance_name: str = "l1") -> Tensor:
@@ -60,48 +58,27 @@ def baseline_rollout_numpy(
     return x_full, y_full
 
 
-def query_probabilities_from_fixed_context(
-    model: nn.Module,
+def query_probabilities_from_preprocessed_prefix(
+    model: torch.nn.Module,
     *,
     x_context: Tensor,
     y_context: Tensor,
     x_query: Tensor,
     n_classes: int,
+    prefix_preprocessor: Any,
 ) -> Tensor:
-    x_num = torch.cat([x_context[None, :, :], x_query[None, :, :]], dim=1)
-    logits = model(x_num=x_num, y_train=y_context[None, :])[..., :n_classes]
-    return logits.softmax(dim=-1).squeeze(0)
-
-
-def query_probabilities_with_optional_preprocessing(
-    model: nn.Module,
-    *,
-    x_context: Tensor,
-    y_context: Tensor,
-    x_query: Tensor,
-    n_classes: int,
-    prefix_cache: Any | None = None,
-    average_before_softmax: bool = False,
-) -> Tensor:
-    if prefix_cache is None:
-        return query_probabilities_from_fixed_context(
-            model,
-            x_context=x_context,
-            y_context=y_context,
-            x_query=x_query,
-            n_classes=n_classes,
-        )
-
-    cached_prefix = prefix_cache.fit_prefix(
+    preprocessed_prefix = prefix_preprocessor.fit_prefix(
         x_context.detach().cpu().numpy(),
         y_context.detach().cpu().numpy(),
     )
-    return query_probabilities_from_cached_prefix(
-        model,
-        cached_prefix=cached_prefix,
+    if not hasattr(model, "query_probabilities"):
+        raise TypeError(
+            "preprocessing requires a model with query_probabilities()."
+        )
+    return model.query_probabilities(
+        preprocessed_prefix=preprocessed_prefix,
         x_query=x_query.detach().cpu().numpy(),
         n_classes=n_classes,
-        average_before_softmax=average_before_softmax,
     )
 
 
@@ -167,7 +144,7 @@ def validate_batched_indices(idx_context: Tensor, idx_query: Tensor) -> None:
 
 def classification_global_emd_loss(
     *,
-    model: nn.Module,
+    model: torch.nn.Module,
     x_all: Tensor,
     y_all: Tensor,
     idx_context: Tensor,
@@ -177,8 +154,7 @@ def classification_global_emd_loss(
     rollout_length: int,
     rollout_seed: int,
     distance_name: str = "l1",
-    standard_preprocessing_cache_factory: Callable[[], Any] | None = None,
-    average_before_softmax: bool = False,
+    preprocessor_factory: Callable[[], Any],
 ) -> Tensor:
     """Global EMD over queries using frozen baseline rollout prefixes."""
 
@@ -186,11 +162,7 @@ def classification_global_emd_loss(
 
     batch_losses: list[Tensor] = []
     for batch_idx in range(idx_query.shape[0]):
-        prefix_cache = (
-            standard_preprocessing_cache_factory()
-            if standard_preprocessing_cache_factory is not None
-            else None
-        )
+        prefix_preprocessor = preprocessor_factory()
         context_indices = idx_context[batch_idx]
         x_query = gather_rows(x_all, idx_query[batch_idx])
         x_rollout, y_rollout = fixed_baseline_rollout_tensors(
@@ -203,26 +175,24 @@ def classification_global_emd_loss(
         )
 
         initial_context_size = context_indices.shape[0]
-        p0 = query_probabilities_with_optional_preprocessing(
+        p0 = query_probabilities_from_preprocessed_prefix(
             model,
             x_context=x_rollout[:initial_context_size],
             y_context=y_rollout[:initial_context_size],
             x_query=x_query,
             n_classes=n_classes,
-            prefix_cache=prefix_cache,
-            average_before_softmax=average_before_softmax,
+            prefix_preprocessor=prefix_preprocessor,
         )
 
         distances: list[Tensor] = []
         for horizon in range(1, rollout_length + 1):
-            p_h = query_probabilities_with_optional_preprocessing(
+            p_h = query_probabilities_from_preprocessed_prefix(
                 model,
                 x_context=x_rollout[: initial_context_size + horizon],
                 y_context=y_rollout[: initial_context_size + horizon],
                 x_query=x_query,
                 n_classes=n_classes,
-                prefix_cache=prefix_cache,
-                average_before_softmax=average_before_softmax,
+                prefix_preprocessor=prefix_preprocessor,
             )
             distances.append(probability_distance(p_h, p0, distance_name=distance_name))
 
@@ -234,7 +204,7 @@ def classification_global_emd_loss(
 
 def classification_self_consistency_loss(
     *,
-    model: nn.Module,
+    model: torch.nn.Module,
     teacher: Tensor,
     x_rollout: Tensor,
     y_rollout: Tensor,
@@ -242,8 +212,7 @@ def classification_self_consistency_loss(
     initial_context_size: int,
     n_classes: int,
     eps: float = 1e-12,
-    prefix_cache: Any | None = None,
-    average_before_softmax: bool = False,
+    prefix_preprocessor: Any,
 ) -> Tensor:
     """Differentiable SC loss on an already-fixed rollout trajectory."""
 
@@ -251,14 +220,13 @@ def classification_self_consistency_loss(
 
     prefix_losses: list[Tensor] = []
     for horizon in range(1, x_rollout.shape[0] - initial_context_size + 1):
-        student = query_probabilities_with_optional_preprocessing(
+        student = query_probabilities_from_preprocessed_prefix(
             model,
             x_context=x_rollout[: initial_context_size + horizon],
             y_context=y_rollout[: initial_context_size + horizon],
             x_query=x_query,
             n_classes=n_classes,
-            prefix_cache=prefix_cache,
-            average_before_softmax=average_before_softmax,
+            prefix_preprocessor=prefix_preprocessor,
         )
         prefix_losses.append(soft_cross_entropy(teacher, student, eps=eps))
 
@@ -268,7 +236,7 @@ def classification_self_consistency_loss(
 
 def classification_self_consistency_rollout_objective(
     *,
-    model: nn.Module,
+    model: torch.nn.Module,
     x_all: Tensor,
     y_all: Tensor,
     idx_context: Tensor,
@@ -278,8 +246,7 @@ def classification_self_consistency_rollout_objective(
     rollout_length: int,
     rollout_seed: int,
     eps: float = 1e-12,
-    standard_preprocessing_cache_factory: Callable[[], Any] | None = None,
-    average_before_softmax: bool = False,
+    preprocessor_factory: Callable[[], Any],
 ) -> Tensor:
     """SC loss over frozen baseline rollout prefixes.
 
@@ -291,11 +258,7 @@ def classification_self_consistency_rollout_objective(
 
     batch_losses: list[Tensor] = []
     for batch_idx in range(idx_query.shape[0]):
-        prefix_cache = (
-            standard_preprocessing_cache_factory()
-            if standard_preprocessing_cache_factory is not None
-            else None
-        )
+        prefix_preprocessor = preprocessor_factory()
         context_indices = idx_context[batch_idx]
         x_query = gather_rows(x_all, idx_query[batch_idx])
         x_rollout, y_rollout = fixed_baseline_rollout_tensors(
@@ -325,8 +288,7 @@ def classification_self_consistency_rollout_objective(
                 initial_context_size=initial_context_size,
                 n_classes=n_classes,
                 eps=eps,
-                prefix_cache=prefix_cache,
-                average_before_softmax=average_before_softmax,
+                prefix_preprocessor=prefix_preprocessor,
             )
         )
 
@@ -335,8 +297,9 @@ def classification_self_consistency_rollout_objective(
 
 def martingale_loss_fn(
     *,
+    loss_name: str = "self_consistency",
     task_type: str,
-    model: nn.Module,
+    model: torch.nn.Module,
     x_all: Tensor,
     y_all: Tensor,
     idx_context: Tensor,
@@ -345,10 +308,8 @@ def martingale_loss_fn(
     baseline_pred_rule_factory: Callable[[], Any] | None = None,
     rollout_length: int = 30,
     rollout_seed: int = 0,
-    distance_name: str = "l1",
     sc_eps: float = 1e-12,
-    standard_preprocessing_cache_factory: Callable[[], Any] | None = None,
-    average_before_softmax: bool = False,
+    preprocessor_factory: Callable[[], Any] | None = None,
 ) -> Tensor:
     if task_type == "classification":
         if n_classes is None:
@@ -357,20 +318,25 @@ def martingale_loss_fn(
             raise ValueError(
                 "baseline_pred_rule_factory is required for classification loss."
             )
-        return classification_self_consistency_rollout_objective(
-            model=model,
-            x_all=x_all,
-            y_all=y_all,
-            idx_context=idx_context,
-            idx_query=idx_query,
-            n_classes=n_classes,
-            baseline_pred_rule_factory=baseline_pred_rule_factory,
-            rollout_length=rollout_length,
-            rollout_seed=rollout_seed,
-            eps=sc_eps,
-            standard_preprocessing_cache_factory=standard_preprocessing_cache_factory,
-            average_before_softmax=average_before_softmax,
-        )
+        if preprocessor_factory is None:
+            raise ValueError(
+                "preprocessor_factory is required for classification loss."
+            )
+        if loss_name == "self_consistency":
+            return classification_self_consistency_rollout_objective(
+                model=model,
+                x_all=x_all,
+                y_all=y_all,
+                idx_context=idx_context,
+                idx_query=idx_query,
+                n_classes=n_classes,
+                baseline_pred_rule_factory=baseline_pred_rule_factory,
+                rollout_length=rollout_length,
+                rollout_seed=rollout_seed,
+                eps=sc_eps,
+                preprocessor_factory=preprocessor_factory,
+            )
+        raise ValueError(f"Unsupported classification loss_name={loss_name}.")
     if task_type == "regression":
         raise NotImplementedError("Regression martingale loss is not implemented yet.")
     raise ValueError(f"Unsupported task_type={task_type}.")
@@ -378,7 +344,7 @@ def martingale_loss_fn(
 
 def martingale_step_fn(
     *,
-    model: nn.Module,
+    model: torch.nn.Module,
     loss_fn: Callable[..., Tensor],
     idx_train: Tensor,
     idx: Tensor,
@@ -386,6 +352,7 @@ def martingale_step_fn(
     context: dict[str, Any],
 ) -> Tensor:
     return loss_fn(
+        loss_name=context.get("loss_name", "self_consistency"),
         task_type=context.get("task_type", "classification"),
         model=model,
         x_all=context["x_num_train"],
@@ -396,18 +363,14 @@ def martingale_step_fn(
         baseline_pred_rule_factory=context.get("baseline_pred_rule_factory"),
         rollout_length=context.get("rollout_length", 30),
         rollout_seed=context.get("rollout_seed", 0) + state.step * 1009,
-        distance_name=context.get("distance_name", "l1"),
         sc_eps=context.get("sc_eps", 1e-12),
-        standard_preprocessing_cache_factory=context.get(
-            "standard_preprocessing_cache_factory"
-        ),
-        average_before_softmax=context.get("average_before_softmax", False),
+        preprocessor_factory=context.get("preprocessor_factory"),
     )
 
 
 def evaluate_global_emd(
     *,
-    model: nn.Module,
+    model: torch.nn.Module,
     x_all: Tensor,
     y_all: Tensor,
     query_idx: np.ndarray,
@@ -417,8 +380,7 @@ def evaluate_global_emd(
     rollout_seed: int = 0,
     include_query_in_context: bool = True,
     distance_name: str = "l1",
-    standard_preprocessing_cache_factory: Callable[[], Any] | None = None,
-    average_before_softmax: bool = False,
+    preprocessor_factory: Callable[[], Any],
 ) -> float:
     device = x_all.device
     idx_context, idx_query = make_eval_indices(
@@ -438,7 +400,6 @@ def evaluate_global_emd(
         rollout_length=rollout_length,
         rollout_seed=rollout_seed,
         distance_name=distance_name,
-        standard_preprocessing_cache_factory=standard_preprocessing_cache_factory,
-        average_before_softmax=average_before_softmax,
+        preprocessor_factory=preprocessor_factory,
     )
     return float(loss.detach().cpu())
