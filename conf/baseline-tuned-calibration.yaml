@@ -1,0 +1,27 @@
+defaults:
+  - dgp: openml
+  - synthetic-test
+  - _self_
+
+data_size: 100
+n_repeats: 200
+seed: 999
+
+n_estimators: 4
+average_before_softmax: false
+ece_bins: 10
+
+base_checkpoint_path: tabpfn-v2-classifier.ckpt
+tuned_checkpoint_path: null
+device: null
+
+date: ${now:%Y-%m-%d}
+lastrun: ${now:%Y-%m-%dT%H:%M:%S%z}
+git: ${githash:}
+
+hydra:
+  run:
+    dir: "./outputs/${date}/baseline-tuned-calibration/name=${dgp.name}_data=${data_size}_repeats=${n_repeats}_seed=${seed}"
+  sweep:
+    dir: ${hydra.run.dir}
+    subdir: .
