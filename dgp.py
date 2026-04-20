@@ -111,19 +111,19 @@ def multidim_stratified_split(
             kbd = KBinsDiscretizer(n_bins=n_bins, encode="ordinal", strategy="quantile")
             continuous_binned = kbd.fit_transform(df.iloc[:, continuous_indices])
 
-        logging.info("Number of data in each bin (for x treated as continuous):")
+        logging.debug("Number of data in each bin (for x treated as continuous):")
         for i, col_idx in enumerate(continuous_indices):
             strata_keys.append(continuous_binned[:, i].astype(int).astype(str))
-            logging.info(
+            logging.debug(
                 f"x[{col_idx}]: {np.bincount(continuous_binned[:, i].astype(int), minlength=n_bins)}"
             )
 
     if categorical_indices:
-        logging.info("Number of data in each bin (for x treated as categorical):")
+        logging.debug("Number of data in each bin (for x treated as categorical):")
         # Add categorical variables directly
         for col_idx in categorical_indices:
             strata_keys.append(df.iloc[:, col_idx].astype(str))
-            logging.info(
+            logging.debug(
                 f"x[{col_idx}]: {df.iloc[:, col_idx].value_counts().to_numpy()}"
             )
 
@@ -140,8 +140,8 @@ def multidim_stratified_split(
     y_valid = y[valid_mask]
     strata_valid = strata[valid_mask]
 
-    logging.info(f"Strata counts: {strata_counts.to_numpy()}")
-    logging.info(f"Valid mask proportion: {sum(valid_mask) / valid_mask.size}")
+    logging.debug(f"Strata counts: {strata_counts.to_numpy()}")
+    logging.debug(f"Valid mask proportion: {sum(valid_mask) / valid_mask.size}")
     train_test_datasets = train_test_split(
         X_valid,
         y_valid,
@@ -300,7 +300,7 @@ class DGPRegressionOpenML(DGPOpenML):
         super().__init__(openml_id, target_index, categorical_x)
         self.input_key = key
         self.strata_bins = strata_bins
-        logging.info(f"Strata bins: {strata_bins}")
+        logging.debug(f"Strata bins: {strata_bins}")
         self.train_data, self.test_data = self.split_data(
             key, n, is_y_categorical=False, continuous_threshold=continuous_threshold
         )
@@ -321,7 +321,7 @@ class DGPClassificationOpenML(DGPOpenML):
         super().__init__(openml_id, target_index, categorical_x)
         self.input_key = key
         self.strata_bins = strata_bins
-        logging.info(f"Strata bins: {strata_bins}")
+        logging.debug(f"Strata bins: {strata_bins}")
         self.train_data, self.test_data = self.split_data(
             key, n, is_y_categorical=True, continuous_threshold=continuous_threshold
         )
@@ -340,7 +340,7 @@ class DGPClassificationUCI(DGPUCI):
         super().__init__(uci_id, categorical_x)
         self.input_key = key
         self.strata_bins = strata_bins
-        logging.info(f"Strata bins: {strata_bins}")
+        logging.debug(f"Strata bins: {strata_bins}")
         self.train_data, self.test_data = self.split_data(key, n, is_y_categorical=True)
 
 
