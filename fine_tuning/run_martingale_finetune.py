@@ -164,6 +164,8 @@ def run(cfg: DictConfig) -> None:
         seed=cfg.seed,
         output_dir=outdir,
         save_best=cfg.save_best,
+        show_progress=cfg.show_progress,
+        progress_log_every_epochs=cfg.progress_log_every_epochs,
     )
 
     context = {

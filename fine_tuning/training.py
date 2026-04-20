@@ -3,12 +3,14 @@ from __future__ import annotations
 import math
 import logging
 import random
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
 import torch
 import torch.nn as nn
+from tqdm import tqdm
 
 
 def loss_fn(*args: Any, **kwargs: Any) -> torch.Tensor:
@@ -63,6 +65,8 @@ class FullFTConfig:
     seed: int = 0
     output_dir: str | Path | None = None
     save_best: bool = True
+    show_progress: bool = True
+    progress_log_every_epochs: int = 10
 
 
 @dataclass
@@ -176,6 +180,17 @@ def save_checkpoint(
     torch.save(payload, path)
 
 
+def _format_duration(seconds: float | None) -> str:
+    if seconds is None or not math.isfinite(seconds):
+        return "unknown"
+    seconds = max(0, int(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:d}:{secs:02d}"
+
+
 def train_full_ft(
     *,
     model: nn.Module,
@@ -248,6 +263,18 @@ def train_full_ft(
 
     if config.n_steps == -1 and eval_fn is None:
         raise ValueError("n_steps=-1 requires eval_fn for early stopping.")
+
+    total_epochs = (
+        math.ceil(config.n_steps / config.epoch_size)
+        if config.n_steps != -1
+        else None
+    )
+    progress_bar = tqdm(
+        total=total_epochs,
+        desc="Epochs",
+        disable=not config.show_progress,
+    )
+    training_start_time = time.monotonic()
 
     while config.n_steps == -1 or state.step < config.n_steps:
         epoch_losses: list[float] = []
@@ -371,14 +398,39 @@ def train_full_ft(
                 for key, value in eval_metrics.items()
             )
         loss_text = "None" if mean_loss is None else f"{mean_loss:.6g}"
-        logging.info(
-            "Epoch %s | step=%s | mean_loss=%s%s | improved=%s",
-            state.epoch,
-            state.step,
-            loss_text,
-            eval_text,
-            improved,
+        completed_epochs = state.epoch + 1
+        elapsed = time.monotonic() - training_start_time
+        if total_epochs is None:
+            eta = None
+        else:
+            eta = elapsed / completed_epochs * max(total_epochs - completed_epochs, 0)
+
+        progress_postfix: dict[str, Any] = {
+            "loss": loss_text,
+            "best": f"{state.best_score:.6g}" if math.isfinite(state.best_score) else "None",
+        }
+        if eval_metrics is not None and "val_global_emd" in eval_metrics:
+            progress_postfix["val_emd"] = f"{eval_metrics['val_global_emd']:.6g}"
+        progress_bar.set_postfix(progress_postfix)
+        progress_bar.update(1)
+
+        should_log_progress = (
+            config.progress_log_every_epochs > 0
+            and completed_epochs % config.progress_log_every_epochs == 0
         )
+        is_final_epoch = total_epochs is not None and completed_epochs >= total_epochs
+        if should_log_progress or improved or is_final_epoch:
+            logging.info(
+                "Epoch %s | step=%s | mean_loss=%s%s | improved=%s | "
+                "elapsed=%s | eta=%s",
+                state.epoch,
+                state.step,
+                loss_text,
+                eval_text,
+                improved,
+                _format_duration(elapsed),
+                _format_duration(eta),
+            )
         state.epoch += 1
 
         if eval_fn is not None and early_stopping.should_stop():
@@ -390,6 +442,8 @@ def train_full_ft(
                 state.best_step,
             )
             break
+
+    progress_bar.close()
 
     if output_dir is not None:
         save_checkpoint(

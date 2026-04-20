@@ -5,6 +5,7 @@ defaults:
 
 data_size: 100
 num_queries: 24
+query_source: test_data
 rollout_times: 8
 rollout_length: 30
 seed: 999
@@ -29,7 +30,7 @@ git: ${githash:}
 
 hydra:
   run:
-    dir: "./outputs/${date}/fixed-query-belief/name=${dgp.name}_data=${data_size}_queries=${num_queries}_rollout_length=${rollout_length}_rollout_times=${rollout_times}_seed=${seed}"
+    dir: "./outputs/${date}/fixed-query-belief/name=${dgp.name}_data=${data_size}_queries=${num_queries}_rollout_length=${rollout_length}_rollout_times=${rollout_times}_seed=${seed}_query_source=${query_source}"
   sweep:
     dir: ${hydra.run.dir}
     subdir: .

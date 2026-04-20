@@ -17,6 +17,8 @@ def plot_mean_belief(
     plot_cols: int,
     outdir: str,
     dataset_name: str,
+    filename_prefix: str | None = None,
+    title_prefix: str | None = None,
 ) -> None:
     depth = np.arange(mean_belief.shape[0])
     num_queries = mean_belief.shape[1]
@@ -69,11 +71,12 @@ def plot_mean_belief(
         for ax in axes[end - start :]:
             ax.axis("off")
 
-        fig.suptitle(
-            f"{dataset_name.capitalize()} fixed-query mean belief across paths "
-            f"({start + 1}-{end}/{num_queries})",
-            y=0.995,
+        title = (
+            title_prefix
+            if title_prefix is not None
+            else f"{dataset_name.capitalize()} fixed-query mean belief across paths"
         )
+        fig.suptitle(f"{title} ({start + 1}-{end}/{num_queries})", y=0.995)
         fig.supxlabel("Depth n")
         fig.supylabel("Mean Belief")
         if class_handles is not None:
@@ -84,9 +87,9 @@ def plot_mean_belief(
                 frameon=True,
             )
         fig.tight_layout(rect=(0, 0, 0.97, 0.97))
-        fig.savefig(
-            f"{outdir}/belief-trajectory-{fig_idx}.png",
-            dpi=200,
-            bbox_inches="tight",
-        )
+        if filename_prefix is None:
+            filename = f"belief-trajectory-{fig_idx}.png"
+        else:
+            filename = f"{filename_prefix}_{start + 1:02d}_{end:02d}.png"
+        fig.savefig(f"{outdir}/{filename}", dpi=200, bbox_inches="tight")
         plt.close(fig)

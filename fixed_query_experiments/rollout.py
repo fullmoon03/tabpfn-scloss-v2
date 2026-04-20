@@ -112,30 +112,53 @@ def collect_rollout_beliefs(
     x_query: np.ndarray,
     progress_desc: str = "Rollouts",
 ) -> tuple[np.ndarray, np.ndarray]:
-    pred_rule = make_classifier_pred_rule(cfg, dgp)
-    pred_rule.fit(dgp.train_data["x"], dgp.train_data["y"])
+    return collect_rollout_beliefs_with_factory(
+        pred_rule_factory=lambda: make_classifier_pred_rule(cfg, dgp),
+        x_train=dgp.train_data["x"],
+        y_train=dgp.train_data["y"],
+        base_key=base_key,
+        x_query=x_query,
+        rollout_times=cfg.rollout_times,
+        rollout_length=cfg.rollout_length,
+        progress_desc=progress_desc,
+    )
+
+
+def collect_rollout_beliefs_with_factory(
+    *,
+    pred_rule_factory,
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    base_key: jax.Array,
+    x_query: np.ndarray,
+    rollout_times: int,
+    rollout_length: int,
+    progress_desc: str = "Rollouts",
+) -> tuple[np.ndarray, np.ndarray]:
+    pred_rule = pred_rule_factory()
+    pred_rule.fit(x_train, y_train)
     class_labels = np.asarray(pred_rule.classes_)
 
     beliefs = np.empty(
         (
-            cfg.rollout_times,
-            cfg.rollout_length + 1,
+            rollout_times,
+            rollout_length + 1,
             x_query.shape[0],
             class_labels.shape[0],
         ),
         dtype=np.float64,
     )
 
-    for rollout_idx in tqdm(range(cfg.rollout_times), desc=progress_desc):
-        pred_rule = make_classifier_pred_rule(cfg, dgp)
+    for rollout_idx in tqdm(range(rollout_times), desc=progress_desc):
+        pred_rule = pred_rule_factory()
         rollout_key = jax.random.fold_in(base_key, rollout_idx)
         beliefs[rollout_idx] = single_rollout_belief_trajectory(
             rollout_key,
             pred_rule,
-            dgp.train_data["x"],
-            dgp.train_data["y"],
+            x_train,
+            y_train,
             x_query,
-            cfg.rollout_length,
+            rollout_length,
         )
 
     return beliefs, class_labels

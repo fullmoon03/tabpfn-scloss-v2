@@ -38,6 +38,8 @@ n_lr_warmup_epochs: null
 amp: false
 randperm: false
 save_best: true
+show_progress: true
+progress_log_every_epochs: 10
 
 loss:
   name: self_consistency

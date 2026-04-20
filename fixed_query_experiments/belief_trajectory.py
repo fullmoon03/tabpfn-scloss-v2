@@ -13,6 +13,7 @@ from fixed_query_experiments import metrics
 from fixed_query_experiments.plotting import plot_mean_belief
 from fixed_query_experiments.rollout import (
     collect_rollout_beliefs,
+    sample_context_queries,
     sample_test_queries,
 )
 import utils
@@ -32,15 +33,26 @@ def run(cfg: DictConfig) -> None:
     base_key, data_key = jax.random.split(base_key)
 
     dgp = load_dgp(cfg, data_key)
-    if getattr(dgp, "test_data", None) is None:
-        raise ValueError(f"{cfg.dgp.name} does not provide a held-out test split for query sampling.")
+    if cfg.query_source == "test_data":
+        if getattr(dgp, "test_data", None) is None:
+            raise ValueError(
+                f"{cfg.dgp.name} does not provide a held-out test split for query sampling."
+            )
+        query_idx, x_query, y_query = sample_test_queries(
+            dgp.test_data, cfg.num_queries, cfg.seed * 101
+        )
+    elif cfg.query_source == "context":
+        query_idx, x_query, y_query = sample_context_queries(
+            dgp.train_data, cfg.num_queries, cfg.seed * 101
+        )
+    else:
+        raise ValueError(
+            f"Unsupported query_source={cfg.query_source}. Use 'test_data' or 'context'."
+        )
 
-    query_idx, x_query, y_query = sample_test_queries(
-        dgp.test_data, cfg.num_queries, cfg.seed * 101
-    )
     utils.write_to(
         f"{outdir}/queries.pickle",
-        {"idx": query_idx, "x": x_query, "y": y_query},
+        {"idx": query_idx, "x": x_query, "y": y_query, "source": cfg.query_source},
         verbose=True,
     )
 
@@ -63,6 +75,7 @@ def run(cfg: DictConfig) -> None:
             "query_idx": query_idx,
             "x_query": x_query,
             "y_query": y_query,
+            "query_source": cfg.query_source,
             "class_labels": class_labels,
         },
         verbose=True,
