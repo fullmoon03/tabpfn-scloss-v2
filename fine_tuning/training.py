@@ -276,6 +276,43 @@ def train_full_ft(
     )
     training_start_time = time.monotonic()
 
+    if eval_fn is not None:
+        model.eval()
+        with torch.inference_mode():
+            initial_result = eval_fn(model=model, state=state, context=context)
+        initial_improved = early_stopping.update(initial_result.score)
+        if initial_improved:
+            state.best_score = initial_result.score
+            state.best_step = state.step
+            if output_dir is not None and config.save_best:
+                save_checkpoint(
+                    output_dir / "best_checkpoint.pt",
+                    model=model,
+                    optimizer=optimizer,
+                    state=state,
+                    lr_scheduler=lr_scheduler,
+                )
+        initial_eval_metrics = initial_result.metrics | {"score": initial_result.score}
+        state.history.append(
+            {
+                "epoch": -1,
+                "step": state.step,
+                "mean_loss": None,
+                "eval": initial_eval_metrics,
+                "improved": initial_improved,
+            }
+        )
+        initial_eval_text = " | ".join(
+            f"{key}={value:.6g}" if isinstance(value, float) else f"{key}={value}"
+            for key, value in initial_eval_metrics.items()
+        )
+        logging.info(
+            "Initial eval | step=%s | %s | improved=%s",
+            state.step,
+            initial_eval_text,
+            initial_improved,
+        )
+
     while config.n_steps == -1 or state.step < config.n_steps:
         epoch_losses: list[float] = []
         model.train()
