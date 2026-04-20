@@ -59,7 +59,7 @@ def _make_eval_fn(
             n_classes=n_classes,
             baseline_pred_rule_factory=baseline_pred_rule_factory,
             rollout_length=rollout_length,
-            rollout_seed=rollout_seed + state.step * 1009,
+            rollout_seed=rollout_seed,
             include_query_in_context=include_query_in_context,
             distance_name=distance_name,
         )
