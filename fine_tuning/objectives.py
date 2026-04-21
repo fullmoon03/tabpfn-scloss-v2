@@ -26,38 +26,6 @@ def soft_cross_entropy(target: Tensor, pred: Tensor, eps: float = 1e-12) -> Tens
     return -(target * torch.log(pred.clamp_min(eps))).sum(dim=-1)
 
 
-def baseline_rollout_numpy(
-    *,
-    baseline_pred_rule_factory: Callable[[], Any],
-    x_context: np.ndarray,
-    y_context: np.ndarray,
-    rollout_length: int,
-    seed: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Generate a fixed discrete rollout using a frozen baseline TabPFN model."""
-
-    x_full = np.asarray(x_context, dtype=np.float64).copy()
-    y_full = np.asarray(y_context).copy()
-    rng = np.random.default_rng(seed)
-    baseline_pred_rule = baseline_pred_rule_factory()
-
-    for _ in range(rollout_length):
-        x_idx = rng.integers(0, x_full.shape[0])
-        x_new = x_full[x_idx : x_idx + 1]
-
-        # The baseline model and categorical sampling are intentionally outside
-        # the training graph. The returned trajectory is treated as fixed data.
-        baseline_pred_rule.fit(x_full, y_full)
-        probs = np.asarray(baseline_pred_rule.predict_proba(x_new)).reshape(-1)
-        probs = probs / probs.sum()
-        y_new = rng.choice(np.asarray(baseline_pred_rule.classes_), p=probs)
-
-        x_full = np.concatenate([x_full, x_new], axis=0)
-        y_full = np.concatenate([y_full, np.asarray([y_new], dtype=y_full.dtype)])
-
-    return x_full, y_full
-
-
 def query_probabilities_from_preprocessed_prefix(
     model: torch.nn.Module,
     *,
@@ -82,30 +50,58 @@ def query_probabilities_from_preprocessed_prefix(
     )
 
 
-def fixed_baseline_rollout_tensors(
+def student_rollout_tensors(
     *,
-    baseline_pred_rule_factory: Callable[[], Any],
+    model: torch.nn.Module,
     x_all: Tensor,
     y_all: Tensor,
     context_indices: Tensor,
+    n_classes: int,
     rollout_length: int,
     rollout_seed: int,
+    preprocessor_factory: Callable[[], Any],
 ) -> tuple[Tensor, Tensor]:
-    with torch.no_grad():
-        x_context_np = gather_rows(x_all, context_indices).detach().cpu().numpy()
-        y_context_np = gather_rows(y_all, context_indices).detach().cpu().numpy()
-        x_rollout_np, y_rollout_np = baseline_rollout_numpy(
-            baseline_pred_rule_factory=baseline_pred_rule_factory,
-            x_context=x_context_np,
-            y_context=y_context_np,
-            rollout_length=rollout_length,
-            seed=rollout_seed,
-        )
+    """Generate a hard-label rollout with the current student model.
 
-    return (
-        torch.as_tensor(x_rollout_np, dtype=x_all.dtype, device=x_all.device),
-        torch.as_tensor(y_rollout_np, dtype=y_all.dtype, device=y_all.device),
-    )
+    The trajectory-generation path is intentionally non-differentiable: labels
+    are sampled as discrete integers and the resulting prefixes are treated as
+    fixed data for the subsequent differentiable belief/loss computation.
+    """
+
+    x_full = gather_rows(x_all, context_indices).detach().clone()
+    y_full = gather_rows(y_all, context_indices).detach().clone()
+    rng = np.random.default_rng(rollout_seed)
+
+    was_training = model.training
+    model.eval()
+    try:
+        with torch.no_grad():
+            for _ in range(rollout_length):
+                x_idx = int(rng.integers(0, x_full.shape[0]))
+                x_new = x_full[x_idx : x_idx + 1]
+                probs = query_probabilities_from_preprocessed_prefix(
+                    model,
+                    x_context=x_full,
+                    y_context=y_full,
+                    x_query=x_new,
+                    n_classes=n_classes,
+                    prefix_preprocessor=preprocessor_factory(),
+                ).reshape(-1)
+                probs_np = probs.detach().cpu().numpy().astype(np.float64)
+                probs_np = probs_np / np.clip(probs_np.sum(), 1e-12, None)
+                y_new_value = int(rng.choice(np.arange(n_classes), p=probs_np))
+                y_new = torch.as_tensor(
+                    [y_new_value],
+                    dtype=y_full.dtype,
+                    device=y_full.device,
+                )
+
+                x_full = torch.cat([x_full, x_new.detach()], dim=0)
+                y_full = torch.cat([y_full, y_new], dim=0)
+    finally:
+        model.train(was_training)
+
+    return x_full, y_full
 
 
 def baseline_query_probabilities_tensor(
@@ -150,13 +146,12 @@ def classification_global_emd_loss(
     idx_context: Tensor,
     idx_query: Tensor,
     n_classes: int,
-    baseline_pred_rule_factory: Callable[[], Any],
     rollout_length: int,
     rollout_seed: int,
     distance_name: str = "l1",
     preprocessor_factory: Callable[[], Any],
 ) -> Tensor:
-    """Global EMD over queries using frozen baseline rollout prefixes."""
+    """Global EMD over queries using student-generated rollout prefixes."""
 
     validate_batched_indices(idx_context, idx_query)
 
@@ -165,13 +160,15 @@ def classification_global_emd_loss(
         prefix_preprocessor = preprocessor_factory()
         context_indices = idx_context[batch_idx]
         x_query = gather_rows(x_all, idx_query[batch_idx])
-        x_rollout, y_rollout = fixed_baseline_rollout_tensors(
-            baseline_pred_rule_factory=baseline_pred_rule_factory,
+        x_rollout, y_rollout = student_rollout_tensors(
+            model=model,
             x_all=x_all,
             y_all=y_all,
             context_indices=context_indices,
+            n_classes=n_classes,
             rollout_length=rollout_length,
             rollout_seed=rollout_seed + batch_idx,
+            preprocessor_factory=preprocessor_factory,
         )
 
         initial_context_size = context_indices.shape[0]
@@ -248,10 +245,11 @@ def classification_self_consistency_rollout_objective(
     eps: float = 1e-12,
     preprocessor_factory: Callable[[], Any],
 ) -> Tensor:
-    """SC loss over frozen baseline rollout prefixes.
+    """SC loss over student-generated rollout prefixes.
 
-    Rollout generation is no-grad and fixed. The differentiable loss is only
-    the soft CE between stop-gradient p_phi,0 and prefix beliefs p_phi,k.
+    Baseline TabPFN supplies only the stop-gradient D_0 anchor. The current
+    student model generates a hard-label rollout without gradient tracking, and
+    the differentiable path is the student belief computation on each prefix.
     """
 
     validate_batched_indices(idx_context, idx_query)
@@ -261,13 +259,15 @@ def classification_self_consistency_rollout_objective(
         prefix_preprocessor = preprocessor_factory()
         context_indices = idx_context[batch_idx]
         x_query = gather_rows(x_all, idx_query[batch_idx])
-        x_rollout, y_rollout = fixed_baseline_rollout_tensors(
-            baseline_pred_rule_factory=baseline_pred_rule_factory,
+        x_rollout, y_rollout = student_rollout_tensors(
+            model=model,
             x_all=x_all,
             y_all=y_all,
             context_indices=context_indices,
+            n_classes=n_classes,
             rollout_length=rollout_length,
             rollout_seed=rollout_seed + batch_idx,
+            preprocessor_factory=preprocessor_factory,
         )
         initial_context_size = context_indices.shape[0]
         teacher = baseline_query_probabilities_tensor(
@@ -375,7 +375,6 @@ def evaluate_global_emd(
     y_all: Tensor,
     query_idx: np.ndarray,
     n_classes: int,
-    baseline_pred_rule_factory: Callable[[], Any],
     rollout_length: int,
     rollout_seed: int = 0,
     include_query_in_context: bool = True,
@@ -396,7 +395,6 @@ def evaluate_global_emd(
         idx_context=idx_context,
         idx_query=idx_query,
         n_classes=n_classes,
-        baseline_pred_rule_factory=baseline_pred_rule_factory,
         rollout_length=rollout_length,
         rollout_seed=rollout_seed,
         distance_name=distance_name,

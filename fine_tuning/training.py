@@ -27,6 +27,7 @@ class FullFTConfig:
     batch_size: int = 1
     context_size: int | None = None
     query_size: int = 1024
+    split_refresh_steps: int = 1
     patience: int = 16
     optimizer: dict[str, Any] = field(
         default_factory=lambda: {"type": "AdamW", "lr": 3e-5, "weight_decay": 0.0}
@@ -85,6 +86,8 @@ class CandidateQueue:
 
 
 def validate_sampling_config(config: FullFTConfig) -> None:
+    if config.split_refresh_steps < 1:
+        raise ValueError("split_refresh_steps must be >= 1.")
     if config.context_size is not None:
         if not 0 < config.context_size <= config.train_size:
             raise ValueError("context_size must be in (0, train_size].")
@@ -298,6 +301,8 @@ def train_full_ft(
         if config.context_size is not None and config.context_size < config.train_size
         else None
     )
+    cached_idx_train: torch.Tensor | None = None
+    cached_idx: torch.Tensor | None = None
     amp_enabled = config.amp and device.type == "cuda" and torch.cuda.is_bf16_supported()
 
     if config.n_steps == -1 and eval_fn is None:
@@ -360,12 +365,19 @@ def train_full_ft(
             if config.n_steps != -1 and state.step >= config.n_steps:
                 break
 
-            idx_train, idx = sample_context_and_query_indices(
-                config=config,
-                candidate_queue=candidate_queue,
-                context_candidate_queue=context_candidate_queue,
-                device=device,
+            should_refresh_split = (
+                cached_idx_train is None
+                or cached_idx is None
+                or state.step % config.split_refresh_steps == 0
             )
+            if should_refresh_split:
+                cached_idx_train, cached_idx = sample_context_and_query_indices(
+                    config=config,
+                    candidate_queue=candidate_queue,
+                    context_candidate_queue=context_candidate_queue,
+                    device=device,
+                )
+            idx_train, idx = cached_idx_train, cached_idx
 
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(
