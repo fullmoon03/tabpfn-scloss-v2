@@ -39,7 +39,7 @@ n_lr_warmup_epochs: null
 amp: false
 randperm: false
 save_best: true
-show_progress: true
+show_progress: false
 progress_log_every_epochs: 1
 
 loss:
