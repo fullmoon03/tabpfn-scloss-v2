@@ -4,4 +4,5 @@ __pycache__/
 .cache/
 datasets/
 outputs/
+outputs_vm1/
 *.ckpt
